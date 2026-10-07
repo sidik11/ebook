@@ -64,6 +64,10 @@ firebase deploy
 
 Hosting routes /api/** to the manual-auth backend.
 
+## Ebook management
+
+Admin can upload PDF ebooks and cover images through the protected admin panel. Each ebook can be marked FREE or PAID. Free ebooks require no Razorpay payment and are automatically available in the signed-url reader; paid ebooks require a verified Razorpay payment. Admins can edit metadata, publish/unpublish, and permanently delete ebooks.
+
 ## Production follow-up
 
 Before launch, add admin OTP authentication, account-recovery OTP, audit logging, and Razorpay webhook reconciliation. The core manual user authentication, session, payment, ownership, and secure ebook access path is server-side.
