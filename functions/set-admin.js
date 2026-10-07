@@ -1,0 +1,1 @@
+const admin=require("firebase-admin");const email=process.argv[2];if(!email)throw new Error("Usage: node functions/set-admin.js admin@example.com");admin.initializeApp();admin.auth().getUserByEmail(email).then(async u=>{await admin.auth().setCustomUserClaims(u.uid,{admin:true});console.log("Admin enabled:",email);process.exit(0)}).catch(e=>{console.error(e);process.exit(1)});
