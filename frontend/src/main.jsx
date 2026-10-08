@@ -69,7 +69,7 @@ export const useAuth = () => useContext(AuthContext);
 function Layout({ children }) {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
-  const location = window.location;
+  const location = useLocation();
   const isAdminArea = location.pathname.startsWith("/admin");
 
   async function handleLogout() {
