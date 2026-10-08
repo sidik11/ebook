@@ -85,10 +85,13 @@ function AdminPanel() {
   };
 
   const setView = next => {
-    navigate(next === "dashboard" ? "/admin" : "/admin/" + next);
+    const target = next === "dashboard" ? "/admin" : "/admin/" + next;
+    if (location.pathname !== target) navigate(target);
     setSidebarOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  const goToUpload = () => setView("upload");
 
   const loadBooks = async () => {
     const data = await api("/api/admin/books");
@@ -467,6 +470,7 @@ function AdminPanel() {
                   <Icon size={18} />
                   <span>{item.label}</span>
                   {item.key === "library" && <b>{books.length}</b>}
+                  {item.key === "upload" && <span className="admin-nav-arrow">→</span>}
                 </button>
               );
             })}
@@ -624,7 +628,7 @@ function AdminPanel() {
                 </div>
 
                 <div className="admin-form-actions">
-                  <button type="button" className="admin-secondary" onClick={() => setView("library")} disabled={uploadBusy}>Back to Library</button>
+                  <button type="button" className="admin-secondary" onClick={() => setView("library")} disabled={uploadBusy}><ArrowLeft size={15} /> Back to Library</button>
                   <button className="admin-primary" disabled={uploadBusy}>
                     <UploadCloud size={17} />
                     {uploadBusy ? "Publishing…" : "Upload & Publish"}
@@ -654,9 +658,21 @@ function AdminPanel() {
               <SectionHeading
                 eyebrow="CATALOG LIBRARY"
                 title={"All ebooks · " + books.length}
-                subtitle="This is the single source of truth for what is published, drafted, priced and stored."
-                action={<button className="admin-primary compact" onClick={() => setView("upload")}><Plus size={16} /> Upload Book</button>}
+                subtitle="Manage every title, price and publishing state from one place."
+                action={
+                  <div className="admin-library-actions">
+                    <button className="admin-secondary compact" onClick={() => setView("dashboard")}><ArrowLeft size={15} /> Dashboard</button>
+                    <button className="admin-primary compact" onClick={goToUpload}><Plus size={16} /> Upload Book</button>
+                  </div>
+                }
               />
+              <div className="admin-library-quickbar">
+                <div>
+                  <strong>Ready to publish?</strong>
+                  <span>Upload a new PDF and cover without leaving the admin workspace.</span>
+                </div>
+                <button className="admin-secondary compact" onClick={goToUpload}><UploadCloud size={15} /> Open upload workspace</button>
+              </div>
               <div className="admin-library-toolbar">
                 <div className="admin-search-wrap">
                   <Search size={17} />
