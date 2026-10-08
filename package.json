@@ -1,1 +1,9 @@
-{"name":"ms-tech-ebook","private":true,"scripts":{"dev":"npm run dev --prefix frontend","build":"npm run build --prefix frontend","install-all":"npm install --prefix frontend && npm install --prefix functions","firebase:deploy":"firebase deploy"},"devDependencies":{"firebase-tools":"^14.24.1"}}
+{
+  "name": "ms-tech-ebook",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix frontend",
+    "install-all": "npm install --prefix frontend && npm install --prefix api"
+  }
+}
