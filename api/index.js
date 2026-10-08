@@ -3,6 +3,7 @@ const cookieParser = require("cookie-parser");
 const crypto = require("crypto");
 const admin = require("firebase-admin");
 const Razorpay = require("razorpay");
+const { google } = require("googleapis");
 
 if (!admin.apps.length) {
   const privateKey = String(process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
@@ -33,6 +34,8 @@ const SIGNED_URL_MS = 5 * 60 * 1000;
 const MAX_BOOK_PRICE = 100000;
 const MAX_BOOK_TITLE = 200;
 const MAX_DESCRIPTION = 5000;
+const PASSWORD_RESET_OTP_MS = 10 * 60 * 1000;
+const PASSWORD_RESET_OTP_ATTEMPTS = 5;
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const randomToken = () => crypto.randomBytes(32).toString("base64url");
 const now = () => Date.now();
@@ -184,6 +187,40 @@ function amountPaise(value) {
   return Math.round(n * 100);
 }
 
+function gmailClient() {
+  const clientId = process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
+  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+  const sender = process.env.GMAIL_SENDER_EMAIL;
+  if (!clientId || !clientSecret || !refreshToken || !validEmail(sender)) {
+    fail(500, "Gmail API is not configured");
+  }
+  const oauth2 = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2.setCredentials({ refresh_token: refreshToken });
+  return { gmail: google.gmail({ version: "v1", auth: oauth2 }), sender };
+}
+function gmailRawMessage({ from, to, subject, html, text }) {
+  const lines = [
+    "From: " + from,
+    "To: " + to,
+    "Subject: " + subject,
+    "MIME-Version: 1.0",
+    "Content-Type: text/html; charset=UTF-8",
+    "",
+    html
+  ];
+  return Buffer.from(lines.join("\r\n")).toString("base64url");
+}
+async function sendGmail({ to, subject, html, text }) {
+  const { gmail, sender } = gmailClient();
+  await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw: gmailRawMessage({ from: sender, to, subject, html, text }) }
+  });
+}
+function resetOtpHash(userId, otp) {
+  return hash(userId + ":" + otp + ":" + String(process.env.AUTH_SESSION_SECRET || "reset-otp"));
+}
 app.use((req, res, next) => {
   res.set("X-Content-Type-Options", "nosniff");
   res.set("X-Frame-Options", "SAMEORIGIN");
@@ -239,6 +276,89 @@ app.post("/api/auth/login", async (req, res) => {
     res.json({ ok: true, user: { name: user.name, email: user.email, role: user.role }, csrfToken: session.csrf });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Login failed" });
+  }
+});
+
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const generic = { ok: true, message: "If an account exists for this email, a verification code has been sent." };
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    if (!validEmail(email)) return res.status(200).json(generic);
+    const userId = hash(email);
+    const user = await get("users/" + userId);
+    if (!user || user.status !== "ACTIVE") return res.status(200).json(generic);
+
+    const otp = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+    const resetId = crypto.randomBytes(24).toString("base64url");
+    await set("passwordResets/" + resetId, {
+      userId,
+      otpHash: resetOtpHash(userId, otp),
+      createdAt: now(),
+      expiresAt: now() + PASSWORD_RESET_OTP_MS,
+      attempts: 0,
+      consumed: false
+    });
+
+    try {
+      await sendGmail({
+        to: user.email,
+        subject: "MS Tech EBook password reset code",
+        text: "Your MS Tech EBook password reset code is " + otp + ". It expires in 10 minutes.",
+        html: "<div style='font-family:Arial,sans-serif;max-width:560px;margin:auto'><h2>MS Tech EBook</h2><p>Your password reset verification code is:</p><div style='font-size:32px;font-weight:700;letter-spacing:8px;padding:18px 0'>" + otp + "</div><p>This code expires in 10 minutes and can be used once.</p><p>If you did not request this, you can safely ignore this email.</p></div>"
+      });
+    } catch (mailError) {
+      await remove("passwordResets/" + resetId);
+      console.error("Password reset email failed", mailError);
+      return res.status(500).json({ error: "Password reset email could not be sent" });
+    }
+    res.json({ ...generic, resetId });
+  } catch (e) {
+    console.error("Forgot password error", e);
+    res.status(500).json({ error: "Password reset request failed" });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    const resetId = safeText(req.body?.resetId, 100);
+    const otp = safeText(req.body?.otp, 6);
+    const password = req.body?.password;
+    if (!resetId || !/^\d{6}$/.test(otp) || !validPassword(password)) return res.status(400).json({ error: "Invalid reset details" });
+
+    const resetPath = "passwordResets/" + key(resetId);
+    const reset = await get(resetPath);
+    if (!reset || reset.consumed || Number(reset.expiresAt) <= now()) return res.status(400).json({ error: "Invalid or expired verification code" });
+    const attempts = Number(reset.attempts || 0);
+    if (attempts >= PASSWORD_RESET_OTP_ATTEMPTS) return res.status(429).json({ error: "Too many verification attempts. Request a new code." });
+
+    if (resetOtpHash(reset.userId, otp) !== reset.otpHash) {
+      await update(resetPath, { attempts: attempts + 1, lastAttemptAt: now() });
+      return res.status(400).json({ error: "Invalid verification code" });
+    }
+
+    const userPath = "users/" + reset.userId;
+    const user = await get(userPath);
+    if (!user || user.status !== "ACTIVE") return res.status(400).json({ error: "Account is unavailable" });
+
+    await db.ref().update({
+      [userPath + "/passwordHash"]: passwordHash(password),
+      [userPath + "/updatedAt"]: now(),
+      [resetPath + "/consumed"]: true,
+      [resetPath + "/consumedAt"]: now()
+    });
+
+    const sessions = await db.ref("sessions").orderByChild("userId").equalTo(reset.userId).once("value");
+    const sessionUpdates = {};
+    sessions.forEach(child => {
+      sessionUpdates["sessions/" + child.key + "/revoked"] = true;
+      sessionUpdates["sessions/" + child.key + "/revokedAt"] = now();
+    });
+    if (Object.keys(sessionUpdates).length) await db.ref().update(sessionUpdates);
+
+    res.json({ ok: true, message: "Password reset successfully. Please log in with your new password." });
+  } catch (e) {
+    console.error("Reset password error", e);
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Password reset failed" });
   }
 });
 
@@ -401,6 +521,9 @@ app.post("/api/orders/create", async (req, res) => {
         status: "CREATED", createdAt: now(), razorpayOrderId: order.id
       });
       res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title });
+    } catch (e) {
+      return res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create Razorpay order" });
+    }
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create order" });
   }
