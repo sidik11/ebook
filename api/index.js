@@ -93,7 +93,7 @@ function getFirebase() {
   const databaseURL = process.env.FIREBASE_DATABASE_URL;
   const storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
 
-  if (!projectId || !clientEmail || !privateKey || !databaseURL || !storageBucket) {
+  if (!projectId || !clientEmail || !privateKey || !databaseURL) {
     return null;
   }
 
@@ -105,7 +105,7 @@ function getFirebase() {
         privateKey
       }),
       databaseURL,
-      storageBucket
+      ...(storageBucket ? { storageBucket } : {})
     });
     dbInstance = admin.database();
     bucketInstance = admin.storage().bucket();
