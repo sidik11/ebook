@@ -288,7 +288,7 @@ function AdminLogin() {
     try {
       const data = await api("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email: login, password, ...(otp ? { otp } : {}) })
+        body: JSON.stringify({ email: login, password, portal: "admin", ...(otp ? { otp } : {}) })
       });
       if (data.user?.role !== "admin") throw new Error("Administrator credentials required.");
       if (data.csrfToken) cachedCsrfToken = data.csrfToken;
@@ -397,6 +397,7 @@ assword] = useState("");
 
 function SetAdmin() {
   const [adminId, setAdminId] = useState("");
+  const [setupKey, setSetupKey] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -424,6 +425,7 @@ function SetAdmin() {
     try {
       await api("/api/setup/admin", {
         method: "POST",
+        headers: { "X-Admin-Setup-Key": setupKey },
         body: JSON.stringify({ adminId, email, password })
       });
       setDone(true);
@@ -467,6 +469,14 @@ function SetAdmin() {
         <p style={{ color: "#a0aec0", fontSize: "14px" }}>
           Configure the primary administrator account. Once set, this setup endpoint is permanently locked.
         </p>
+        <input
+          type="password"
+          placeholder="Admin Setup Key"
+          value={setupKey}
+          onChange={e => setSetupKey(e.target.value)}
+          minLength={16}
+          required
+        />
         <input
           placeholder="Admin User ID (e.g. admin)"
           value={adminId}
