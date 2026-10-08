@@ -194,6 +194,10 @@ function Books() {
 function AuthForm({ register = false }) {
   const { setUser } = useAuth();
   const [email, setEmail] = useState("");
+  const [registeredMessage, setRegisteredMessage] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return !register && params.get("registered") === "1";
+  });
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
@@ -210,10 +214,17 @@ function AuthForm({ register = false }) {
         method: "POST",
         body: JSON.stringify(payload)
       });
-      if (data.csrfToken) cachedCsrfToken = data.csrfToken;
-      setUser(data.user);
-      if (data.user.mustChangePassword) navigate("/change-password");
-      else navigate("/books");
+      if (register) {
+        cachedCsrfToken = "";
+        setUser(null);
+        setRegisteredMessage(true);
+        navigate("/login?registered=1", { replace: true });
+      } else {
+        if (data.csrfToken) cachedCsrfToken = data.csrfToken;
+        setUser(data.user);
+        if (data.user.mustChangePassword) navigate("/change-password");
+        else navigate("/books");
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -224,7 +235,9 @@ function AuthForm({ register = false }) {
   return (
     <main className="auth">
       <form onSubmit={handleSubmit}>
-        <h1>{register ? "Create Account" : "Welcome Back"}</h1>
+        <span className="auth-kicker">{register ? "JOIN THE READING CLUB" : "WELCOME BACK"}</span>
+        <h1>{register ? "Create your account." : "Sign in & start reading."}</h1>
+        {!register && registeredMessage && <p className="success auth-success">Account created successfully. Now enter your email and password to log in.</p>}
         {register && (
           <input placeholder="Your Full Name" value={name} onChange={e => setName(e.target.value)} required />
         )}
@@ -1231,15 +1244,24 @@ function Reader() {
   useEffect(() => {
     const preventAction = e => e.preventDefault();
     const preventKeys = e => {
-      if ((e.ctrlKey || e.metaKey) && ["c", "x", "s", "p", "u"].includes(e.key.toLowerCase())) {
+      const key = String(e.key || "").toLowerCase();
+      if (
+        ((e.ctrlKey || e.metaKey) && ["c", "x", "s", "p", "u", "a"].includes(key)) ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && ["i", "j", "c"].includes(key)) ||
+        key === "f12"
+      ) {
         e.preventDefault();
+        e.stopPropagation();
       }
     };
-    ["contextmenu", "copy", "cut", "selectstart"].forEach(ev => document.addEventListener(ev, preventAction));
-    document.addEventListener("keydown", preventKeys);
+    const blockEvents = ["contextmenu", "copy", "cut", "selectstart", "dragstart"];
+    blockEvents.forEach(ev => document.addEventListener(ev, preventAction, true));
+    document.addEventListener("keydown", preventKeys, true);
+    document.documentElement.classList.add("protected-reader-active");
     return () => {
-      ["contextmenu", "copy", "cut", "selectstart"].forEach(ev => document.removeEventListener(ev, preventAction));
-      document.removeEventListener("keydown", preventKeys);
+      blockEvents.forEach(ev => document.removeEventListener(ev, preventAction, true));
+      document.removeEventListener("keydown", preventKeys, true);
+      document.documentElement.classList.remove("protected-reader-active");
     };
   }, []);
 
@@ -1256,7 +1278,10 @@ function Reader() {
       {loading ? (
         <div className="center"><p>Preparing your reading session...</p></div>
       ) : url ? (
-        <iframe title="Protected Ebook Reader" src={`${url}#toolbar=0&navpanes=0`} />
+        <div className="reader-frame" onContextMenu={e => e.preventDefault()}>
+          <iframe title="Protected Ebook Reader" src={`${url}#toolbar=0&navpanes=0&view=FitH`} sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer" />
+          <div className="reader-shield" aria-hidden="true" />
+        </div>
       ) : (
         <div className="center error"><p>Could not load the ebook file.</p></div>
       )}
