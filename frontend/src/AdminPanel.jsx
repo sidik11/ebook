@@ -121,7 +121,7 @@ function AdminPanel() {
 
   const loadOrders = async () => {
     try {
-      const data = await api("/api/admin/orders");
+      const data = await api("/api/admin/orders?limit=1000");
       setOrders(Array.isArray(data.orders) ? data.orders : []);
     } catch {
       setOrders([]);
@@ -130,7 +130,7 @@ function AdminPanel() {
 
   const loadUsers = async () => {
     try {
-      const data = await api("/api/admin/users");
+      const data = await api("/api/admin/users?limit=1000");
       setUsers(Array.isArray(data.users) ? data.users : []);
     } catch {
       setUsers([]);
