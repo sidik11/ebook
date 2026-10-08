@@ -105,13 +105,14 @@ The admin panel supports:
 
 - PDF upload
 - cover upload
+- live upload progress for each file
 - FREE / PAID pricing
 - metadata editing
 - publish / unpublish
 - deletion
 - audit logging
 
-PDFs and covers remain private in Firebase Storage. RTDB stores metadata and authorization/payment state.
+PDFs and covers remain private in Firebase Storage. Browser uploads use short-lived signed multipart POST policies, so administrator uploads do not depend on bucket CORS configuration or a browser PUT preflight. The server verifies each uploaded object before creating the ebook metadata record. RTDB stores metadata and authorization/payment state.
 
 ## Production requirements
 
