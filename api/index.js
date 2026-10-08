@@ -6,6 +6,8 @@ const cookieParser = require("cookie-parser");
 const admin = require("firebase-admin");
 const Razorpay = require("razorpay");
 const { google } = require("googleapis");
+const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 // Load local .env if present
 function loadEnv() {
@@ -50,6 +52,28 @@ loadEnv();
 let firebaseInitialized = false;
 let dbInstance = null;
 let bucketInstance = null;
+let r2Client = null;
+
+function getR2() {
+  const bucket = String(process.env.BUCKET || "").trim();
+  const accessKeyId = String(process.env.R2_ACCESS_KEY || "").trim();
+  const secretAccessKey = String(process.env.R2_SECRET_KEY || "").trim();
+  const endpoint = String(process.env.R2_ENDPOINT || "").trim();
+  if (!bucket || !accessKeyId || !secretAccessKey || !endpoint) return null;
+  if (!r2Client) r2Client = new S3Client({ region: "auto", endpoint, credentials: { accessKeyId, secretAccessKey } });
+  return { client: r2Client, bucket };
+}
+function requireR2() {
+  const r2 = getR2();
+  if (!r2) fail(503, "R2 storage is not configured. Set BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY, and R2_ENDPOINT.");
+  return r2;
+}
+async function r2SignedGet(keyName) {
+  const r2 = requireR2();
+  return getSignedUrl(r2.client, new GetObjectCommand({ Bucket: r2.bucket, Key: keyName }), { expiresIn: Math.floor(SIGNED_URL_MS / 1000) });
+}
+function isR2Path(value) { return /^private\/(ebooks|covers)\/[a-f0-9-]+\.(pdf|jpg|png|webp)$/.test(String(value || "")); }
+function isR2Book(book) { return book?.storageProvider === "r2"; }
 
 function getFirebase() {
   if (firebaseInitialized && dbInstance) {
@@ -329,18 +353,16 @@ async function publicBook(bookId, data) {
   const book = { id: bookId, ...data };
   delete book.storagePath;
   delete book.coverPath;
+  delete book.storageProvider;
   if (data.coverPath) {
     try {
-      const bucket = requireBucket();
-      const [url] = await bucket.file(data.coverPath).getSignedUrl({
-        action: "read",
-        expires: now() + SIGNED_URL_MS,
-        responseDisposition: "inline"
-      });
-      book.coverUrl = url;
-    } catch {
-      book.coverUrl = null;
-    }
+      if (isR2Book(data)) book.coverUrl = await r2SignedGet(data.coverPath);
+      else {
+        const bucket = requireBucket();
+        const [url] = await bucket.file(data.coverPath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline" });
+        book.coverUrl = url;
+      }
+    } catch { book.coverUrl = null; }
   }
   return book;
 }
@@ -872,14 +894,9 @@ router.post("/admin/storage-cors", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
-    res.json({
-      ok: true,
-      uploadMode: "signed-post",
-      message: "Bucket CORS configuration is not required for administrator uploads."
-    });
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.status ? e.message : "Storage upload configuration unavailable" });
-  }
+    const r2 = getR2();
+    res.json({ ok: Boolean(r2), uploadMode: "r2-signed-put", corsRequired: true, message: r2 ? "Cloudflare R2 is configured. Browser uploads require an R2 bucket CORS rule for this site origin." : "R2 storage is not configured." });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Storage upload configuration unavailable" }); }
 });
 
 const STORAGE_UPLOADS = {
@@ -907,32 +924,13 @@ router.post("/admin/upload-url", async (req, res) => {
     if (!spec) return res.status(400).json({ error: "Unsupported file type. Use PDF, JPG, PNG, or WEBP." });
     if (!Number.isFinite(Number(size)) || Number(size) <= 0) return res.status(400).json({ error: "Invalid file size" });
     if (Number(size) > spec.max) return res.status(400).json({ error: `File is too large. Maximum allowed for this file type is ${Math.round(spec.max / (1024 * 1024))} MB.` });
-
     const storagePath = "private/" + spec.folder + "/" + crypto.randomUUID() + "." + spec.ext;
-    const bucket = requireBucket();
-    const file = bucket.file(storagePath);
-    const [policy] = await file.generateSignedPostPolicyV4({
-      expires: new Date(now() + 15 * 60 * 1000),
-      fields: { "Content-Type": type },
-      conditions: [
-        ["content-length-range", 1, spec.max]
-      ]
-    });
-
-    res.json({
-      mode: "signed-post",
-      url: policy.url,
-      fields: policy.fields,
-      path: storagePath,
-      maxBytes: spec.max,
-      expiresAt: now() + 15 * 60 * 1000
-    });
+    const r2 = requireR2();
+    const uploadUrl = await getSignedUrl(r2.client, new PutObjectCommand({ Bucket: r2.bucket, Key: storagePath, ContentType: type }), { expiresIn: 15 * 60 });
+    res.json({ mode: "signed-put", url: uploadUrl, path: storagePath, storageProvider: "r2", contentType: type, maxBytes: spec.max, expiresAt: now() + 15 * 60 * 1000 });
   } catch (e) {
-    console.error("Upload policy error:", e);
-    res.status(e.status || 500).json({
-      error: e.status ? e.message : "Could not create secure upload policy",
-      code: e.code || "UPLOAD_POLICY_ERROR"
-    });
+    console.error("R2 upload URL error:", e);
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create secure R2 upload URL", code: e.code || "R2_UPLOAD_URL_ERROR" });
   }
 });
 
@@ -941,21 +939,16 @@ router.get("/admin/upload-status", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth) return;
     const storagePath = String(req.query?.path || "");
-    if (!isManagedStoragePath(storagePath)) return res.status(400).json({ error: "Invalid upload path" });
-    const bucket = requireBucket();
-    const file = bucket.file(storagePath);
-    const [exists] = await file.exists();
-    if (!exists) return res.json({ uploaded: false, path: storagePath });
-    const [metadata] = await file.getMetadata();
-    res.json({
-      uploaded: true,
-      path: storagePath,
-      size: Number(metadata.size || 0),
-      contentType: metadata.contentType || null
-    });
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not verify uploaded file" });
-  }
+    if (!isR2Path(storagePath)) return res.status(400).json({ error: "Invalid R2 upload path" });
+    const r2 = requireR2();
+    try {
+      const metadata = await r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: storagePath }));
+      return res.json({ uploaded: true, path: storagePath, storageProvider: "r2", size: Number(metadata.ContentLength || 0), contentType: metadata.ContentType || null, etag: metadata.ETag || null });
+    } catch (err) {
+      if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NotFound" || err?.name === "NoSuchKey") return res.json({ uploaded: false, path: storagePath, storageProvider: "r2" });
+      throw err;
+    }
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not verify R2 upload" }); }
 });
 
 router.delete("/admin/upload-file", async (req, res) => {
@@ -963,30 +956,21 @@ router.delete("/admin/upload-file", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
     const storagePath = String(req.body?.path || "");
-    if (!isManagedStoragePath(storagePath)) return res.status(400).json({ error: "Invalid upload path" });
-    const bucket = requireBucket();
-    await bucket.file(storagePath).delete({ ignoreNotFound: true });
+    if (!isR2Path(storagePath)) return res.status(400).json({ error: "Invalid R2 upload path" });
+    const r2 = requireR2();
+    await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: storagePath }));
     res.json({ ok: true });
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not remove incomplete upload" });
-  }
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not remove incomplete R2 upload" }); }
 });
 
 function normalizeBookInput(body) {
   const type = body.type === "FREE" ? "FREE" : body.type === "PAID" ? "PAID" : null;
   const price = type === "FREE" ? 0 : Number(body.price);
-  if (!type || !safeText(body.title, MAX_BOOK_TITLE) || !body.storagePath || !body.coverPath) fail(400, "Invalid book details");
+  const storageProvider = body.storageProvider === "r2" ? "r2" : null;
+  if (!type || !safeText(body.title, MAX_BOOK_TITLE) || !body.storagePath || !body.coverPath || storageProvider !== "r2") fail(400, "Invalid book details");
+  if (!isR2Path(body.storagePath) || !isR2Path(body.coverPath)) fail(400, "Book files must be stored in R2.");
   if (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE)) fail(400, "Invalid book price");
-  return {
-    title: safeText(body.title, MAX_BOOK_TITLE),
-    author: safeText(body.author, 120),
-    category: safeText(body.category, 80),
-    description: safeText(body.description, MAX_DESCRIPTION),
-    type,
-    price,
-    storagePath: String(body.storagePath),
-    coverPath: String(body.coverPath)
-  };
+  return { title: safeText(body.title, MAX_BOOK_TITLE), author: safeText(body.author, 120), category: safeText(body.category, 80), description: safeText(body.description, MAX_DESCRIPTION), type, price, storageProvider, storagePath: String(body.storagePath), coverPath: String(body.coverPath) };
 }
 
 router.post("/admin/books", async (req, res) => {
@@ -994,6 +978,15 @@ router.post("/admin/books", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
     const book = normalizeBookInput(req.body || {});
+    const r2 = requireR2();
+    const [pdfMeta, coverMeta] = await Promise.all([
+      r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.storagePath })),
+      r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.coverPath }))
+    ]);
+    const pdfSize = Number(pdfMeta.ContentLength || 0);
+    const coverSize = Number(coverMeta.ContentLength || 0);
+    if (pdfSize <= 0 || pdfSize > STORAGE_UPLOADS["application/pdf"].max || String(pdfMeta.ContentType || "").toLowerCase() !== "application/pdf") fail(400, "PDF upload could not be verified in R2.");
+    if (coverSize <= 0 || coverSize > 10 * 1024 * 1024 || !["image/jpeg","image/png","image/webp"].includes(String(coverMeta.ContentType || "").toLowerCase())) fail(400, "Cover upload could not be verified in R2.");
     const db = requireDb();
     const id = db.ref("books").push().key;
     await set("books/" + id, { ...book, status: "ACTIVE", createdAt: now(), updatedAt: now(), createdBy: auth.user.email });
@@ -1046,10 +1039,15 @@ router.delete("/admin/books/:id", async (req, res) => {
     const bookPath = "books/" + key(req.params.id);
     const book = await get(bookPath);
     if (!book) return res.status(404).json({ error: "Book not found" });
-    const bucket = requireBucket();
-    for (const storagePath of [book.storagePath, book.coverPath]) {
-      if (storagePath) {
-        try { await bucket.file(storagePath).delete(); } catch (e) { if (e.code !== 404) console.warn("Delete file error:", e.message); }
+    if (isR2Book(book)) {
+      const r2 = requireR2();
+      for (const storagePath of [book.storagePath, book.coverPath]) {
+        if (storagePath) { try { await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: storagePath })); } catch (e) { console.warn("R2 delete file error:", e.message); } }
+      }
+    } else {
+      const bucket = requireBucket();
+      for (const storagePath of [book.storagePath, book.coverPath]) {
+        if (storagePath) { try { await bucket.file(storagePath).delete(); } catch (e) { if (e.code !== 404) console.warn("Delete file error:", e.message); } }
       }
     }
     await remove(bookPath);
@@ -1201,12 +1199,12 @@ router.get("/books/:id/secure-url", async (req, res) => {
         return res.status(403).json({ error: "Purchase required" });
       }
     }
-    const bucket = requireBucket();
-    const [url] = await bucket.file(book.storagePath).getSignedUrl({
-      action: "read",
-      expires: now() + SIGNED_URL_MS,
-      responseDisposition: "inline"
-    });
+    let url;
+    if (isR2Book(book)) url = await r2SignedGet(book.storagePath);
+    else {
+      const bucket = requireBucket();
+      [url] = await bucket.file(book.storagePath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline" });
+    }
     res.json({ url, expiresIn: SIGNED_URL_MS / 1000 });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Could not open ebook" });
