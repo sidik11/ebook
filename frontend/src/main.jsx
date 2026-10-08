@@ -760,37 +760,33 @@ function Admin() {
     }));
   };
 
-  const waitForUploadedFile = async (storagePath, expectedSize) => {
-    for (let attempt = 0; attempt < 12; attempt++) {
+  const waitForUploadedFile = async (storagePath, expectedSize, expectedType) => {
+    for (let attempt = 0; attempt < 16; attempt++) {
       try {
         const result = await api("/api/admin/upload-status?path=" + encodeURIComponent(storagePath));
-        if (result.uploaded && Number(result.size) >= Number(expectedSize)) return result;
+        if (result.uploaded && Number(result.size) === Number(expectedSize) && String(result.contentType || "").toLowerCase() === String(expectedType || "").toLowerCase()) return result;
       } catch {}
       await new Promise(resolve => setTimeout(resolve, 750));
     }
-    throw new Error("Storage did not confirm the upload. Please try again.");
+    throw new Error("R2 did not confirm the upload. Check the R2 bucket CORS policy and try again.");
   };
 
   const uploadDirect = async (f, kind, label) => {
     updateUploadState(kind, { status: "preparing", progress: 0, message: `Preparing ${label}...` });
-
     const policy = await api("/api/admin/upload-url", {
       method: "POST",
       body: JSON.stringify({ name: f.name, type: f.type, size: f.size })
     });
-
-    updateUploadState(kind, { status: "uploading", progress: 0, message: `Uploading ${label}...` });
-
+    updateUploadState(kind, { status: "uploading", progress: 0, message: `Uploading ${label} to Cloudflare R2...` });
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       let finished = false;
-
       const confirmUpload = async () => {
         if (finished) return;
         try {
-          await waitForUploadedFile(policy.path, f.size);
+          await waitForUploadedFile(policy.path, f.size, f.type);
           finished = true;
-          updateUploadState(kind, { status: "done", progress: 100, message: `${label} uploaded successfully` });
+          updateUploadState(kind, { status: "done", progress: 100, message: `${label} uploaded to R2 successfully` });
           resolve(policy.path);
         } catch (err) {
           finished = true;
@@ -798,29 +794,29 @@ function Admin() {
           reject(err);
         }
       };
-
-      xhr.open("POST", policy.url, true);
+      xhr.open("PUT", policy.url, true);
+      xhr.setRequestHeader("Content-Type", f.type);
       xhr.timeout = 30 * 60 * 1000;
-
       xhr.upload.onprogress = event => {
         if (event.lengthComputable) {
           const progress = Math.min(99, Math.round((event.loaded / event.total) * 100));
-          updateUploadState(kind, {
-            status: "uploading",
-            progress,
-            message: `${label}: ${progress}%`
-          });
+          updateUploadState(kind, { status: "uploading", progress, message: `${label}: ${progress}%` });
         }
       };
-
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          updateUploadState(kind, { progress: 100, message: `${label} transfer complete. Verifying...` });
+          updateUploadState(kind, { progress: 100, message: `${label} transfer complete. Verifying R2 object...` });
+          confirmUpload();
+        } else {
+          finished = true;
+          const detail = xhr.status === 403 ? "R2 rejected the upload. Check the R2 CORS policy and credentials." : `R2 upload failed with HTTP ${xhr.status}.`;
+          updateUploadState(kind, { status: "error", progress: 0, message: detail });
+          reject(new Error(detail));
         }
-        confirmUpload();
       };
-
-      xhr.onerror = confirmUpload;
+      xhr.onerror = () => {
+        if (!finished) confirmUpload().catch(() => {});
+      };
       xhr.ontimeout = () => {
         if (!finished) {
           finished = true;
@@ -835,15 +831,9 @@ function Admin() {
           reject(new Error(`${label} upload was cancelled.`));
         }
       };
-
-      const form = new FormData();
-      Object.entries(policy.fields || {}).forEach(([key, value]) => form.append(key, value));
-      form.append("file", f, f.name);
-      xhr.send(form);
+      xhr.send(f);
     });
   };
-
-
   const loadBooks = () => {
     api("/api/admin/books")
       .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
@@ -912,7 +902,8 @@ function Admin() {
           type,
           price: type === "FREE" ? 0 : Number(form.price),
           coverPath,
-          storagePath
+          storagePath,
+          storageProvider: "r2"
         })
       });
 
@@ -1165,8 +1156,8 @@ function Admin() {
           <span className="eyebrow">GUIDELINES</span>
           <h2>Secure Distribution</h2>
           <ol>
-            <li>Files are kept in private Firebase Storage.</li>
-            <li>Readers receive timed signed URLs only after authorization.</li>
+            <li>Files are kept in a private Cloudflare R2 bucket.</li>
+            <li>Readers receive short-lived signed R2 URLs only after authorization.</li>
             <li>Set prices in whole Rupees (INR).</li>
             <li>Use high-resolution 3:4 aspect ratio covers for best appearance.</li>
           </ol>
