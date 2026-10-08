@@ -622,7 +622,7 @@ function AdminPanel() {
               <StatCard label="Total buy amount" value={formatMoney(analyticsOverview.totalBuyAmount)} icon={<IndianRupee size={19} />} meta={analyticsOverview.paidOrders + " successful payments"} />
               <StatCard label="Total orders" value={analyticsOverview.totalOrders} icon={<ShoppingBag size={19} />} meta={analyticsOverview.openOrders + " unpaid / open"} />
               <StatCard label="Unique buyers" value={analyticsOverview.uniqueBuyers} icon={<UserCheck size={19} />} meta={analyticsOverview.totalPurchases + " paid purchases"} />
-              <StatCard label="Today" value={formatMoney(analyticsOverview.todayRevenue)} icon={<TrendingUp size={19} />} meta="Revenue today"} />
+              <StatCard label="Today" value={formatMoney(analyticsOverview.todayRevenue)} icon={<TrendingUp size={19} />} meta="Revenue today" />
               <StatCard label="Last 7 days" value={formatMoney(analyticsOverview.last7DaysRevenue)} icon={<BarChart3 size={19} />} meta="Rolling revenue"} />
               <StatCard label="Last 30 days" value={formatMoney(analyticsOverview.last30DaysRevenue)} icon={<BarChart3 size={19} />} meta="Rolling revenue"} />
               <StatCard label="Average order" value={formatMoney(analyticsOverview.averageOrderValue)} icon={<IndianRupee size={19} />} meta={analyticsOverview.paymentSuccessRate.toFixed(1) + "% payment success"} />
