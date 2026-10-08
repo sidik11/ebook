@@ -82,9 +82,6 @@ function Layout({ children }) {
           {user ? (
             <>
               <Link to="/library">My Library</Link>
-              {user.role === "admin" && (
-                <Link to="/admin" style={{ color: "#a78bfa", fontWeight: 700 }}>Admin Panel</Link>
-              )}
               <button onClick={handleLogout} style={{ opacity: 0.85 }}>Logout ({user.name.split(" ")[0]})</button>
             </>
           ) : (
@@ -197,10 +194,11 @@ function Books() {
 function AuthForm({ register = false }) {
   const { setUser } = useAuth();
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useStatfunction AuthForm({ register = false }) {
+  const { setUser } = useAuth();
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
-  const [otp, setOtp] = useState("");
-  const [otpRequired, setOtpRequired] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
@@ -209,32 +207,17 @@ function AuthForm({ register = false }) {
     e.preventDefault();
     setError("");
     setBusy(true);
-
     try {
-      const payload = register
-        ? { name, email, password }
-        : { email, password, ...(otp ? { otp } : {}) };
-
-      const endpoint = register ? "/api/auth/register" : "/api/auth/login";
-      const data = await api(endpoint, {
+      const payload = register ? { name, email, password } : { email, password };
+      const data = await api(register ? "/api/auth/register" : "/api/auth/login", {
         method: "POST",
         body: JSON.stringify(payload)
       });
-
       if (data.csrfToken) cachedCsrfToken = data.csrfToken;
       setUser(data.user);
-
-      if (data.user.mustChangePassword) {
-        navigate("/change-password");
-      } else if (data.user.role === "admin") {
-        navigate("/admin");
-      } else {
-        navigate("/books");
-      }
+      if (data.user.mustChangePassword) navigate("/change-password");
+      else navigate("/books");
     } catch (err) {
-      if (!register && (err.message.includes("Admin verification code") || err.data?.code === "ADMIN_OTP_REQUIRED")) {
-        setOtpRequired(true);
-      }
       setError(err.message);
     } finally {
       setBusy(false);
@@ -246,16 +229,12 @@ function AuthForm({ register = false }) {
       <form onSubmit={handleSubmit}>
         <h1>{register ? "Create Account" : "Welcome Back"}</h1>
         {register && (
-          <input
-            placeholder="Your Full Name"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            required
-          />
+          <input placeholder="Your Full Name" value={name} onChange={e => setName(e.target.value)} required />
         )}
         <input
-          type={register ? "email" : "text"}
-          placeholder={register ? "Email Address" : "Email or Admin ID"}
+          type="email"
+          placeholder="Email Address"
+          autoComplete={register ? "email" : "username"}
           value={email}
           onChange={e => setEmail(e.target.value)}
           required
@@ -264,24 +243,14 @@ function AuthForm({ register = false }) {
           type="password"
           placeholder={register ? "Password (10+ chars: upper, lower, number)" : "Password"}
           minLength={register ? 10 : undefined}
+          autoComplete={register ? "new-password" : "current-password"}
           value={password}
           onChange={e => setPassword(e.target.value)}
           required
         />
-        {otpRequired && (
-          <input
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            placeholder="6-digit Admin 2FA Code"
-            maxLength="6"
-            value={otp}
-            onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            required
-          />
-        )}
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>
-          {busy ? "Signing in..." : register ? "Create Account" : "Login"}
+          {busy ? "Please wait..." : register ? "Create Account" : "Login"}
         </button>
         <p style={{ textAlign: "center", marginTop: "12px", fontSize: "14px" }}>
           <Link to={register ? "/login" : "/register"}>
@@ -298,10 +267,62 @@ function AuthForm({ register = false }) {
   );
 }
 
-function ChangePassword() {
+function AdminLogin() {
   const { user, setUser } = useAuth();
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [otpRequired, setOtpRequired] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (user?.role === "admin") navigate("/admin", { replace: true });
+  }, [user, navigate]);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      const data = await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: login, password, ...(otp ? { otp } : {}) })
+      });
+      if (data.user?.role !== "admin") throw new Error("Administrator credentials required.");
+      if (data.csrfToken) cachedCsrfToken = data.csrfToken;
+      setUser(data.user);
+      navigate(data.user.mustChangePassword ? "/change-password" : "/admin");
+    } catch (err) {
+      if (err.data?.code === "ADMIN_OTP_REQUIRED" || err.message.includes("Admin verification code")) setOtpRequired(true);
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth">
+      <form onSubmit={handleSubmit}>
+        <h1>Administrator Portal</h1>
+        <p style={{ color: "#a0aec0", fontSize: "14px", lineHeight: 1.6 }}>
+          Secure administrator access. Customer accounts cannot use this portal.
+        </p>
+        <input type="text" placeholder="Admin ID or email" autoComplete="username" value={login} onChange={e => setLogin(e.target.value)} required />
+        <input type="password" placeholder="Administrator password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required />
+        {otpRequired && (
+          <input inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit Admin 2FA Code" maxLength={6} value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))} required />
+        )}
+        {error && <p className="error">{error}</p>}
+        <button className="primary" disabled={busy}>{busy ? "Signing in..." : "Administrator Login"}</button>
+        <p style={{ textAlign: "center", fontSize: "13px", marginTop: "4px" }}><Link to="/books">Return to Store</Link></p>
+      </form>
+    </main>
+  );
+}
+
+assword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -797,7 +818,7 @@ function Admin() {
 
   useEffect(() => {
     if (!user || user.role !== "admin") {
-      navigate("/login");
+      navigate("/admin/admin");
       return;
     }
     if (user.mustChangePassword) {
@@ -1208,8 +1229,8 @@ function App() {
           <Route path="/setadmin" element={<SetAdmin />} />
           <Route path="/library" element={user ? <Library /> : <Navigate to="/login" replace />} />
           <Route path="/read/:id" element={user ? <Reader /> : <Navigate to="/login" replace />} />
-          <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/login" replace />} />
-          <Route path="/admin/admin" element={<Navigate to="/admin" replace />} />
+          <Route path="/admin/admin" element={<AdminLogin />} />
+          <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/admin/admin" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
