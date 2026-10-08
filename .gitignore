@@ -1,8 +1,10 @@
 node_modules/
 dist/
+frontend/dist/
 .env
 .env.local
 .env.*.local
+api/.env
 .firebase/
 firebase-debug.log
 functions/.env

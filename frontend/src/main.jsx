@@ -1,91 +1,1227 @@
-import React,{useEffect,useState}from"react";import ReactDOM from"react-dom/client";import{BrowserRouter,Routes,Route,Link,Navigate,useNavigate,useParams}from"react-router-dom";import"./styles.css";
-const api=async(path,opt={})=>{const r=await fetch(path,{...opt,credentials:"include",headers:{"Content-Type":"application/json",...(opt.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||"Request failed");return d};
-const auth=async()=>api("/api/auth/me");
-const Grid=({books=[]})=><div className="grid">{Array.isArray(books)&&books.length?books.map(b=><Link className="card" to={"/books/"+b.id} key={b.id}><div className="cover">{b.coverUrl?<img src={b.coverUrl}/>:<b>MS<br/>TECH<br/>EBOOK</b>}</div><h3>{b.title}</h3><p>{b.author||"MS Tech EBook"}</p><strong>{b.type==="FREE"||Number(b.price||0)===0?"FREE":"₹"+Number(b.price||0)}</strong></Link>):<div className="empty">No ebooks published yet.</div>}</div>;
-function Layout({user,setUser,children}){async function logout(){await api("/api/auth/logout",{method:"POST"});setUser(null)}return <><header><Link className="brand" to="/">MS Tech EBook</Link><nav><Link to="/books">Books</Link>{user?<><Link to="/library">My Library</Link><button onClick={logout}>Logout</button></>:<><Link to="/login">Login</Link><Link to="/register">Create Account</Link></>}</nav></header>{children}<footer>© {new Date().getFullYear()} MS Tech EBook</footer></>};
-function Home(){const[b,setB]=useState([]),[err,setErr]=useState("");useEffect(()=>api("/api/books").then(x=>setB(Array.isArray(x.books)?x.books:[])).catch(x=>setErr(x.message)),[]);return <main className="hero"><div><small>PREMIUM DIGITAL READING</small><h1>Read with <em>MS Tech EBook.</em></h1><p>Buy once. Keep your ebook in your personal library.</p><Link className="primary" to="/books">Browse Ebooks</Link></div><section><h2>Featured</h2>{err?<p className="error">{err}</p>:<Grid books={b.slice(0,6)}/>}</section></main>};
-function Books(){const[b,setB]=useState([]),[s,setS]=useState(""),[err,setErr]=useState("");useEffect(()=>api("/api/books").then(x=>setB(Array.isArray(x.books)?x.books:[])).catch(x=>setErr(x.message)),[]);return <main className="container"><h1>All Ebooks</h1>{err&&<p className="error">{err}</p>}<input placeholder="Search..." value={s} onChange={e=>setS(e.target.value)}/><Grid books={b.filter(x=>(x.title+" "+(x.author||"")).toLowerCase().includes(s.toLowerCase()))}/></main>};
-function AuthForm({register=false,setUser}){const[email,setE]=useState(""),[pw,setP]=useState(""),[name,setN]=useState(""),[otp,setOtp]=useState(""),[otpRequired,setOtpRequired]=useState(false),[err,setErr]=useState("");const nav=useNavigate();async function go(e){e.preventDefault();setErr("");try{const body=register?{name,email,password:pw}:{email,password:pw,...(otp?{otp}:{})};const d=await api(register?"/api/auth/register":"/api/auth/login",{method:"POST",body:JSON.stringify(body)});setUser(d.user);nav(d.user.mustChangePassword?"/change-password":"/")}catch(x){if(!register&&x.message==="Admin verification code required")setOtpRequired(true);setErr(x.message)}}return <main className="auth"><form onSubmit={go}><h1>{register?"Create Account":"Login"}</h1>{register&&<input placeholder="Name" value={name} onChange={e=>setN(e.target.value)} required/>}<input type={register?"email":"text"} placeholder={register?"Email":"Email or admin"} value={email} onChange={e=>setE(e.target.value)} required/><input type="password" placeholder={register?"Password (10+ characters, upper/lower/number)":"Password"} minLength={register?10:undefined} value={pw} onChange={e=>setP(e.target.value)} required/>{otpRequired&&<input inputMode="numeric" autoComplete="one-time-code" placeholder="Admin 6-digit code" maxLength="6" value={otp} onChange={e=>setOtp(e.target.value.replace(/\D/g,"").slice(0,6))} required/>}{err&&<p className="error">{err}</p>}<button className="primary">Continue</button><p><Link to={register?"/login":"/register"}>{register?"Already have an account? Login":"Create an account"}</Link></p>{!register&&<p><Link to="/forgot-password">Forgot password?</Link></p>}</form></main>};function ChangePassword({user,setUser}){const[current,setCurrent]=useState(""),[pw,setP]=useState(""),[confirm,setC]=useState(""),[err,setErr]=useState(""),[done,setDone]=useState(false);const nav=useNavigate();async function submit(e){e.preventDefault();setErr("");if(pw!==confirm)return setErr("Passwords do not match");try{const me=await auth();await api("/api/auth/change-password",{method:"POST",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({currentPassword:current,newPassword:pw})});setUser({...user,mustChangePassword:false});setDone(true);setTimeout(()=>nav("/admin/admin"),700)}catch(x){setErr(x.message)}}return <main className="auth"><form onSubmit={submit}><h1>{user?.mustChangePassword?"Secure Admin Account":"Change Password"}</h1>{user?.mustChangePassword&&<p className="success">First-time admin login detected. Replace the temporary password before entering the admin panel.</p>}<input type="password" placeholder="Current password" value={current} onChange={e=>setCurrent(e.target.value)} required/><input type="password" placeholder="New password (10+ characters, upper/lower/number)" minLength="10" value={pw} onChange={e=>setP(e.target.value)} required/><input type="password" placeholder="Confirm new password" minLength="10" value={confirm} onChange={e=>setC(e.target.value)} required/>{err&&<p className="error">{err}</p>}{done?<p className="success">Password changed. Opening admin panel...</p>:<button className="primary">Change Password</button>}<p><button type="button" onClick={async()=>{await api("/api/auth/logout",{method:"POST"});setUser(null);nav("/login")}}>Logout</button></p></form></main>}
+import React, { useEffect, useState, createContext, useContext } from "react";
+import ReactDOM from "react-dom/client";
+import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import "./styles.css";
 
-function SetAdmin(){
-  const[adminId,setAdminId]=useState(""),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[confirm,setConfirm]=useState(""),[locked,setLocked]=useState(false),[busy,setBusy]=useState(false),[done,setDone]=useState(false),[err,setErr]=useState("");
-  const nav=useNavigate();
-  useEffect(()=>{api("/api/setup/admin").then(()=>setLocked(false)).catch(e=>{if(e.message.includes("already completed"))setLocked(true);else setErr(e.message)})},[]);
-  async function submit(e){
-    e.preventDefault();setErr("");
-    if(password!==confirm)return setErr("Passwords do not match");
-    setBusy(true);
-    try{
-      await api("/api/setup/admin",{method:"POST",body:JSON.stringify({adminId,email,password})});
-      setDone(true);
-      setTimeout(()=>nav("/login"),1200);
-    }catch(x){
-      if(x.message.includes("already completed"))setLocked(true);
-      setErr(x.message);
-    }finally{setBusy(false)}
+// Global CSRF token cache
+let cachedCsrfToken = "";
+
+function getCookie(name) {
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop().split(";").shift();
+  return "";
+}
+
+export async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+
+  const method = (options.method || "GET").toUpperCase();
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    const csrf = cachedCsrfToken || getCookie("ms_csrf");
+    if (csrf && !headers["X-CSRF-Token"]) {
+      headers["X-CSRF-Token"] = csrf;
+    }
   }
-  if(locked)return <main className="auth"><form><h1>Setup Locked</h1><p className="success">The administrator account has already been configured. This setup page can no longer be used.</p><button type="button" className="primary" onClick={()=>nav("/login")}>Go to Login</button></form></main>;
-  if(done)return <main className="auth"><form><h1>Admin Created</h1><p className="success">Administrator account created successfully. The setup page is now permanently locked.</p><p>Redirecting to login...</p></form></main>;
-  return <main className="auth"><form onSubmit={submit}><h1>Set Admin</h1><p>Create the one and only administrator account. After saving, this setup endpoint is permanently locked.</p><input placeholder="Admin user ID" value={adminId} onChange={e=>setAdminId(e.target.value)} pattern="[A-Za-z0-9_-]{3,64}" minLength="3" maxLength="64" required/><input type="email" placeholder="Admin email" value={email} onChange={e=>setEmail(e.target.value)} required/><input type="password" placeholder="Admin password (10+ characters, upper/lower/number)" minLength="10" value={password} onChange={e=>setPassword(e.target.value)} required/><input type="password" placeholder="Confirm admin password" minLength="10" value={confirm} onChange={e=>setConfirm(e.target.value)} required/>{err&&<p className="error">{err}</p>}<button className="primary" disabled={busy}>{busy?"Saving...":"Create Admin Account"}</button></form></main>;
+
+  const res = await fetch(path, {
+    ...options,
+    credentials: "include",
+    headers
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (data.csrfToken) {
+    cachedCsrfToken = data.csrfToken;
+  }
+
+  if (!res.ok) {
+    const errorMsg = data.error || (res.statusText ? `${res.status} ${res.statusText}` : "Request failed");
+    const err = new Error(errorMsg);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+
+  return data;
 }
-function ForgotPassword(){
-  const[email,setE]=useState(""),[sent,setSent]=useState(false),[err,setErr]=useState("");
-  async function send(e){e.preventDefault();setErr("");try{await api("/api/auth/forgot-password",{method:"POST",body:JSON.stringify({email})});setSent(true)}catch(x){setErr(x.message)}}
-  return <main className="auth"><form onSubmit={send}><h1>Forgot Password</h1>{sent?<><p>Check your email for the 6-digit verification code.</p><Link className="primary" to={"/reset-password?email="+encodeURIComponent(email)}>Enter Verification Code</Link></>:<><p>Enter your registered email address.</p><input type="email" placeholder="Email" value={email} onChange={e=>setE(e.target.value)} required/>{err&&<p className="error">{err}</p>}<button className="primary">Send OTP</button></>}<p><Link to="/login">Back to Login</Link></p></form></main>
+
+export async function checkAuth() {
+  const res = await api("/api/auth/me");
+  if (res.csrfToken) cachedCsrfToken = res.csrfToken;
+  return res;
 }
-function ResetPassword(){
-  const[email,setE]=useState(""),[otp,setOtp]=useState(""),[pw,setP]=useState(""),[confirm,setC]=useState(""),[err,setErr]=useState(""),[done,setDone]=useState(false);
-  const nav=useNavigate();
-  useEffect(()=>{const q=new URLSearchParams(window.location.search);setE(q.get("email")||"")},[]);
-  async function reset(e){e.preventDefault();setErr("");if(pw!==confirm)return setErr("Passwords do not match");try{
-    const d=await api("/api/auth/reset-password",{method:"POST",body:JSON.stringify({otp,password:pw})});
-    setDone(true);setTimeout(()=>nav("/login"),1200);
-  }catch(x){setErr(x.message)}}
-  async function requestCode(){try{const d=await api("/api/auth/forgot-password",{method:"POST",body:JSON.stringify({email})});setDone(false);alert(d.message)}catch(x){setErr(x.message)}}
-  return <main className="auth"><form onSubmit={reset}><h1>Reset Password</h1><input type="email" placeholder="Email" value={email} onChange={e=>setE(e.target.value)} required/><input inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit OTP" maxLength="6" value={otp} onChange={e=>setOtp(e.target.value.replace(/\D/g,"").slice(0,6))} required/><input type="password" placeholder="New password (10+ characters, upper/lower/number)" minLength="10" value={pw} onChange={e=>setP(e.target.value)} required/><input type="password" placeholder="Confirm new password" minLength="10" value={confirm} onChange={e=>setC(e.target.value)} required/>{err&&<p className="error">{err}</p>}{done?<p className="success">Password reset successfully. Redirecting...</p>:<><button className="primary">Reset Password</button><button type="button" onClick={requestCode}>Send OTP Again</button></>}</form></main>
+
+// Auth Context for centralized user state
+const AuthContext = createContext(null);
+export const useAuth = () => useContext(AuthContext);
+
+function Layout({ children }) {
+  const { user, setUser } = useAuth();
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    try {
+      await api("/api/auth/logout", { method: "POST" });
+    } catch {}
+    cachedCsrfToken = "";
+    setUser(null);
+    navigate("/login");
+  }
+
+  return (
+    <>
+      <header>
+        <Link className="brand" to="/">MS Tech EBook</Link>
+        <nav>
+          <Link to="/books">Store</Link>
+          {user ? (
+            <>
+              <Link to="/library">My Library</Link>
+              {user.role === "admin" && (
+                <Link to="/admin" style={{ color: "#a78bfa", fontWeight: 700 }}>Admin Panel</Link>
+              )}
+              <button onClick={handleLogout} style={{ opacity: 0.85 }}>Logout ({user.name.split(" ")[0]})</button>
+            </>
+          ) : (
+            <>
+              <Link to="/login">Login</Link>
+              <Link to="/register">Register</Link>
+            </>
+          )}
+        </nav>
+      </header>
+      {children}
+      <footer>
+        <p>© {new Date().getFullYear()} MS Tech EBook. All rights reserved.</p>
+      </footer>
+    </>
+  );
 }
-function Detail({user}){const{id}=useParams(),[b,setB]=useState(),[owned,setO]=useState(false);const nav=useNavigate();useEffect(()=>{api("/api/books/"+id).then(x=>setB(x.book));if(user)api("/api/library").then(x=>setO(x.books.some(y=>y.id===id))).catch(()=>{})},[id,user]);async function buy(){if(!user)return nav("/login");try{const c=await api("/api/auth/me");const r=await api("/api/orders/create",{method:"POST",headers:{"X-CSRF-Token":c.csrfToken},body:JSON.stringify({bookId:id})});const z=new window.Razorpay({...r,prefill:{email:user.email},handler:async v=>{await api("/api/orders/verify",{method:"POST",headers:{"X-CSRF-Token":c.csrfToken},body:JSON.stringify({bookId:id,...v})});nav("/library")}});z.open()}catch(e){alert(e.message)}}if(!b)return <main className="center">Loading...</main>;return <main className="detail"><div className="cover big">{b.coverUrl?<img src={b.coverUrl}/>:<b>MS<br/>TECH<br/>EBOOK</b>}</div><div><small>{b.category||"EBOOK"}</small><h1>{b.title}</h1><p>{b.description}</p><h2>{b.type==="FREE"||Number(b.price||0)===0?"Free":"₹"+Number(b.price||0)}</h2>{owned||b.type==="FREE"||Number(b.price||0)===0?<Link className="primary" to={"/read/"+id}>Read Now</Link>:<button className="primary" onClick={buy}>Buy Now</button>}</div></main>};
-function Library(){const[b,setB]=useState([]);useEffect(()=>api("/api/library").then(x=>setB(x.books)),[]);return <main className="container"><h1>My Library</h1><Grid books={b}/></main>};
-function Admin({user}){
- const nav=useNavigate(),[books,setBooks]=useState([]),[type,setType]=useState("PAID"),[form,setForm]=useState({title:"",author:"",category:"",description:"",price:""}),[cover,setCover]=useState(null),[file,setFile]=useState(null),[busy,setBusy]=useState(false),[msg,setMsg]=useState(""),[err,setErr]=useState(""),[editing,setEditing]=useState(null);
- const load=()=>api("/api/admin/books").then(x=>setBooks(Array.isArray(x.books)?x.books:[])).catch(x=>setErr(x.message));
- useEffect(()=>{if(!user||user.role!=="admin"){nav("/login");return}if(user.mustChangePassword){nav("/change-password");return}load()},[user,nav]);
- const reset=()=>{setEditing(null);setType("PAID");setForm({title:"",author:"",category:"",description:"",price:""});setCover(null);setFile(null);setErr("")};
- async function upload(e){e.preventDefault();setBusy(true);setMsg("");setErr("");
-  try{if(!cover||!file)throw Error("Select both a cover image and PDF ebook");if(file.type!=="application/pdf")throw Error("Ebook must be a PDF");if(!["image/jpeg","image/png","image/webp"].includes(cover.type))throw Error("Cover must be JPG, PNG or WEBP");
-   const me=await auth();await api("/api/admin/storage-cors",{method:"POST",headers:{"X-CSRF-Token":me.csrfToken}});const up=async f=>{if(!f)throw Error("Please select a file");const max=f.type==="application/pdf"?100*1024*1024:10*1024*1024;if(f.size>max)throw Error(`${f.name} is too large. Maximum allowed is ${Math.round(max/(1024*1024))} MB.`);const u=await api("/api/admin/upload-url",{method:"POST",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({name:f.name,type:f.type,size:f.size})});if(f.size>Number(u.maxBytes||0))throw Error(`${f.name} is too large. Maximum allowed is ${Math.round(Number(u.maxBytes)/(1024*1024))} MB.`);const r=await fetch(u.url,{method:"PUT",headers:{"Content-Type":f.type},body:f});if(!r.ok)throw Error(`Upload failed for ${f.name}`);return u.path};
-   const coverPath=await up(cover),storagePath=await up(file);if(!coverPath||!storagePath)throw Error("Upload did not return storage paths");await api("/api/admin/books",{method:"POST",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({...form,type,price:type==="FREE"?0:Number(form.price),coverPath,storagePath})});
-   setMsg("Ebook uploaded successfully.");reset();e.target.reset();await load()
-  }catch(x){setErr(x.message)}finally{setBusy(false)}
- }
- async function saveEdit(e){e.preventDefault();setBusy(true);setErr("");
-  try{const me=await auth();await api("/api/admin/books/"+editing.id,{method:"PATCH",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({...form,type,price:type==="FREE"?0:Number(form.price),status:editing.status})});setMsg("Book updated.");reset();await load()}catch(x){setErr(x.message)}finally{setBusy(false)}
- }
- async function remove(id){if(!confirm("Delete this ebook permanently?"))return;try{const me=await auth();await api("/api/admin/books/"+id,{method:"DELETE",headers:{"X-CSRF-Token":me.csrfToken}});setMsg("Book deleted.");await load()}catch(x){setErr(x.message)}}
- async function toggle(b){try{const me=await auth();await api("/api/admin/books/"+b.id,{method:"PATCH",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({...b,status:b.status==="ACTIVE"?"DRAFT":"ACTIVE"})});setMsg(b.status==="ACTIVE"?"Book unpublished.":"Book published.");await load()}catch(x){setErr(x.message)}}
- function edit(b){setEditing(b);setType(b.type||"PAID");setForm({title:b.title||"",author:b.author||"",category:b.category||"",description:b.description||"",price:b.price||""});setMsg("");setErr("");window.scrollTo({top:0,behavior:"smooth"})}
- if(!user||user.role!=="admin")return <main className="center">Checking admin access...</main>;
- return <main className="admin-shell">
-  <div className="admin-top"><div><span className="eyebrow">MS TECH EBOOK · ADMIN</span><h1>Dashboard</h1><p>Manage your digital catalog, pricing and publishing status.</p></div><div className="admin-top-actions"><Link className="admin-secondary" to="/books">View Store</Link><button className="admin-secondary" onClick={async()=>{await api("/api/auth/logout",{method:"POST"});window.location.href="/login"}}>Sign out</button></div></div>
-  <div className="admin-stats"><div><span>Total ebooks</span><strong>{books.length}</strong></div><div><span>Published</span><strong>{books.filter(b=>b.status==="ACTIVE").length}</strong></div><div><span>Free</span><strong>{books.filter(b=>b.type==="FREE").length}</strong></div><div><span>Paid</span><strong>{books.filter(b=>b.type==="PAID").length}</strong></div></div>
-  <div className="admin-grid">
-   <section className="admin-panel"><div className="panel-title"><div><span className="eyebrow">{editing?"EDIT EBOOK":"ADD NEW EBOOK"}</span><h2>{editing?"Update ebook":"Publish a new ebook"}</h2></div>{editing&&<button className="admin-secondary" onClick={reset}>Cancel</button>}</div>
-    <form className="admin-form" onSubmit={editing?saveEdit:upload}>
-     <div className="field"><label>Book title *</label><input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})} placeholder="e.g. Database Management System"/></div>
-     <div className="field-row"><div className="field"><label>Author</label><input value={form.author} onChange={e=>setForm({...form,author:e.target.value})} placeholder="Author name"/></div><div className="field"><label>Category</label><input value={form.category} onChange={e=>setForm({...form,category:e.target.value})} placeholder="Computer Science"/></div></div>
-     <div className="field"><label>Description</label><textarea rows="5" value={form.description} onChange={e=>setForm({...form,description:e.target.value})} placeholder="Short description for the store..."/></div>
-     <div className="field-row"><div className="field"><label>Book type *</label><select value={type} onChange={e=>setType(e.target.value)}><option value="PAID">Paid ebook</option><option value="FREE">Free ebook</option></select></div><div className="field"><label>Price (₹) {type==="PAID"&&"*"}</label><input type="number" min="1" step="1" disabled={type==="FREE"} required={type==="PAID"} value={type==="FREE"?"":form.price} onChange={e=>setForm({...form,price:e.target.value})} placeholder="499"/></div></div>
-     {!editing&&<div className="upload-grid"><label className="upload-box"><span>Cover image</span><input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required onChange={e=>setCover(e.target.files?.[0]||null)}/><small>{cover?cover.name:"JPG, PNG or WEBP · max 10 MB"}</small></label><label className="upload-box"><span>PDF ebook</span><input type="file" accept=".pdf,application/pdf" required onChange={e=>setFile(e.target.files?.[0]||null)}/><small>{file?file.name:"PDF only · max 100 MB"}</small></label></div>}
-     {err&&<p className="error">{err}</p>}{msg&&<p className="success">{msg}</p>}
-     <button className="admin-primary" disabled={busy}>{busy?"Saving...":editing?"Save changes":"Upload & publish ebook"}</button>
-    </form>
-   </section>
-   <aside className="admin-panel admin-help"><span className="eyebrow">WORKFLOW</span><h2>Publishing checklist</h2><ol><li>Choose a cover image.</li><li>Upload the PDF.</li><li>Select Free or Paid.</li><li>Set the price for paid books.</li><li>Publish and verify it from the store.</li></ol><div className="admin-note"><strong>Protected storage</strong><p>PDF files are stored privately. Readers receive a short-lived access URL only after a valid purchase or for a free book.</p></div></aside>
-  </div>
-  <section className="admin-panel catalog"><div className="panel-title"><div><span className="eyebrow">CATALOG</span><h2>Manage ebooks</h2></div><span className="catalog-count">{books.length} total</span></div>
-   {books.length?<div className="catalog-list">{books.map(b=><div className="catalog-row" key={b.id}><div className="catalog-cover">{b.coverUrl?<img src={b.coverUrl} alt=""/>:<span>PDF</span>}</div><div className="catalog-main"><strong>{b.title}</strong><span>{b.author||"MS Tech EBook"} · {b.category||"General"}</span></div><div className="catalog-meta"><b className={b.type==="FREE"?"free":"paid"}>{b.type==="FREE"?"FREE":"₹"+Number(b.price||0)}</b><span className={b.status==="ACTIVE"?"published":"draft"}>{b.status==="ACTIVE"?"Published":"Draft"}</span></div><div className="catalog-actions"><button onClick={()=>edit(b)}>Edit</button><button onClick={()=>toggle(b)}>{b.status==="ACTIVE"?"Unpublish":"Publish"}</button><button className="danger" onClick={()=>remove(b.id)}>Delete</button></div></div>)}</div>:<div className="catalog-empty"><h3>No ebooks yet</h3><p>Upload your first ebook using the form above.</p></div>}
-  </section>
- </main>
-}function Reader(){const{id}=useParams(),[url,setUrl]=useState(""),[err,setErr]=useState("");useEffect(()=>{api("/api/books/"+id+"/secure-url").then(x=>setUrl(x.url)).catch(e=>setErr(e.message))},[id]);useEffect(()=>{const stop=e=>e.preventDefault(),key=e=>{if((e.ctrlKey||e.metaKey)&&["c","x","s","p","u"].includes(e.key.toLowerCase()))e.preventDefault()};["contextmenu","copy","cut","selectstart"].forEach(x=>document.addEventListener(x,stop));document.addEventListener("keydown",key);return()=>{["contextmenu","copy","cut","selectstart"].forEach(x=>document.removeEventListener(x,stop));document.removeEventListener("keydown",key)}},[]);if(err)return <main className="center error">{err}</main>;return <main className="reader"><div className="readerbar">Protected Reader <Link to="/library">Exit</Link></div>{url?<iframe title="ebook" src={url+"#toolbar=0&navpanes=0"}/>:<div className="center">Opening...</div>}</main>};
-function App(){const[user,setUser]=useState(null),[loading,setLoading]=useState(true);useEffect(()=>{auth().then(x=>setUser(x.user)).catch(()=>{}).finally(()=>setLoading(false))},[]);if(loading)return <main className="center">Loading...</main>;return <Layout user={user} setUser={setUser}><Routes><Route path="/" element={<Home/>}/><Route path="/books" element={<Books/>}/><Route path="/books/:id" element={<Detail user={user}/>}/><Route path="/login" element={<AuthForm setUser={setUser}/>}/><Route path="/change-password" element={user?<ChangePassword user={user} setUser={setUser}/>:<AuthForm setUser={setUser}/>}/><Route path="/forgot-password" element={<ForgotPassword/>}/><Route path="/reset-password" element={<ResetPassword/>}/><Route path="/setadmin" element={<SetAdmin/>}/><Route path="/register" element={<AuthForm register setUser={setUser}/>}/><Route path="/library" element={user?<Library/>:<AuthForm setUser={setUser}/>}/><Route path="/read/:id" element={user?<Reader/>:<AuthForm setUser={setUser}/>}/><Route path="/admin/admin" element={user?<Admin user={user}/>:<AuthForm setUser={setUser}/>}/><Route path="/admin" element={<Navigate to="/admin/admin" replace/>}/></Routes></Layout>}
-ReactDOM.createRoot(document.getElementById("root")).render(<BrowserRouter><App/></BrowserRouter>);
+
+function Grid({ books = [] }) {
+  if (!Array.isArray(books) || books.length === 0) {
+    return <div className="empty" style={{ padding: "40px 0", textAlign: "center", color: "#8b949e" }}>No ebooks available at the moment.</div>;
+  }
+
+  return (
+    <div className="grid">
+      {books.map(b => (
+        <Link className="card" to={`/books/${b.id}`} key={b.id}>
+          <div className="cover">
+            {b.coverUrl ? (
+              <img src={b.coverUrl} alt={b.title} loading="lazy" />
+            ) : (
+              <b>MS<br />TECH<br />EBOOK</b>
+            )}
+          </div>
+          <h3>{b.title}</h3>
+          <p>{b.author || "MS Tech EBook"}</p>
+          <strong>{b.type === "FREE" || Number(b.price || 0) === 0 ? "FREE" : "₹" + Number(b.price || 0)}</strong>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function Home() {
+  const [books, setBooks] = useState([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api("/api/books")
+      .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <main className="hero">
+      <div>
+        <small style={{ letterSpacing: "2px", fontWeight: 700, color: "#9b8cff" }}>PREMIUM DIGITAL READING</small>
+        <h1>Read with <em>MS Tech EBook.</em></h1>
+        <p>Buy once. Keep your digital books forever in your personal cloud library.</p>
+        <Link className="primary" to="/books" style={{ marginTop: "16px" }}>Browse Catalog</Link>
+      </div>
+      <section>
+        <h2>Featured Titles</h2>
+        {loading && <p style={{ color: "#8b949e" }}>Loading catalog...</p>}
+        {error && <p className="error">{error}</p>}
+        {!loading && !error && <Grid books={books.slice(0, 6)} />}
+      </section>
+    </main>
+  );
+}
+
+function Books() {
+  const [books, setBooks] = useState([]);
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api("/api/books")
+      .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const filtered = books.filter(b =>
+    `${b.title} ${b.author || ""} ${b.category || ""}`.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <main className="container">
+      <h1>All Ebooks</h1>
+      {error && <p className="error">{error}</p>}
+      <input
+        type="search"
+        placeholder="Search by title, author, or category..."
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+      />
+      {loading ? (
+        <p style={{ color: "#8b949e" }}>Loading ebooks...</p>
+      ) : (
+        <Grid books={filtered} />
+      )}
+    </main>
+  );
+}
+
+function AuthForm({ register = false }) {
+  const { setUser } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [otp, setOtp] = useState("");
+  const [otpRequired, setOtpRequired] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+
+    try {
+      const payload = register
+        ? { name, email, password }
+        : { email, password, ...(otp ? { otp } : {}) };
+
+      const endpoint = register ? "/api/auth/register" : "/api/auth/login";
+      const data = await api(endpoint, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      if (data.csrfToken) cachedCsrfToken = data.csrfToken;
+      setUser(data.user);
+
+      if (data.user.mustChangePassword) {
+        navigate("/change-password");
+      } else if (data.user.role === "admin") {
+        navigate("/admin");
+      } else {
+        navigate("/books");
+      }
+    } catch (err) {
+      if (!register && (err.message.includes("Admin verification code") || err.data?.code === "ADMIN_OTP_REQUIRED")) {
+        setOtpRequired(true);
+      }
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth">
+      <form onSubmit={handleSubmit}>
+        <h1>{register ? "Create Account" : "Welcome Back"}</h1>
+        {register && (
+          <input
+            placeholder="Your Full Name"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            required
+          />
+        )}
+        <input
+          type={register ? "email" : "text"}
+          placeholder={register ? "Email Address" : "Email or Admin ID"}
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder={register ? "Password (10+ chars: upper, lower, number)" : "Password"}
+          minLength={register ? 10 : undefined}
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          required
+        />
+        {otpRequired && (
+          <input
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="6-digit Admin 2FA Code"
+            maxLength="6"
+            value={otp}
+            onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+            required
+          />
+        )}
+        {error && <p className="error">{error}</p>}
+        <button className="primary" disabled={busy}>
+          {busy ? "Signing in..." : register ? "Create Account" : "Login"}
+        </button>
+        <p style={{ textAlign: "center", marginTop: "12px", fontSize: "14px" }}>
+          <Link to={register ? "/login" : "/register"}>
+            {register ? "Already have an account? Login here" : "Don't have an account? Register"}
+          </Link>
+        </p>
+        {!register && (
+          <p style={{ textAlign: "center", fontSize: "14px", marginTop: "4px" }}>
+            <Link to="/forgot-password" style={{ color: "#9b8cff" }}>Forgot password?</Link>
+          </p>
+        )}
+      </form>
+    </main>
+  );
+}
+
+function ChangePassword() {
+  const { user, setUser } = useAuth();
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    if (newPassword !== confirmPassword) {
+      return setError("Passwords do not match");
+    }
+    setBusy(true);
+
+    try {
+      await api("/api/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      setUser({ ...user, mustChangePassword: false });
+      setDone(true);
+      setTimeout(() => navigate(user?.role === "admin" ? "/admin" : "/books"), 1000);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth">
+      <form onSubmit={handleSubmit}>
+        <h1>{user?.mustChangePassword ? "Set Up New Password" : "Change Password"}</h1>
+        {user?.mustChangePassword && (
+          <p className="success">First-time login detected. Please create a new secure password.</p>
+        )}
+        <input
+          type="password"
+          placeholder="Current Password"
+          value={currentPassword}
+          onChange={e => setCurrentPassword(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder="New Password (10+ chars, upper, lower, number)"
+          minLength={10}
+          value={newPassword}
+          onChange={e => setNewPassword(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder="Confirm New Password"
+          minLength={10}
+          value={confirmPassword}
+          onChange={e => setConfirmPassword(e.target.value)}
+          required
+        />
+        {error && <p className="error">{error}</p>}
+        {done ? (
+          <p className="success">Password updated! Redirecting...</p>
+        ) : (
+          <button className="primary" disabled={busy}>
+            {busy ? "Updating..." : "Update Password"}
+          </button>
+        )}
+      </form>
+    </main>
+  );
+}
+
+function SetAdmin() {
+  const [adminId, setAdminId] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [locked, setLocked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    api("/api/setup/admin")
+      .then(() => setLocked(false))
+      .catch(e => {
+        if (e.message && e.message.includes("already completed")) setLocked(true);
+        else setError(e.message);
+      });
+  }, []);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (password !== confirm) return setError("Passwords do not match");
+    setBusy(true);
+
+    try {
+      await api("/api/setup/admin", {
+        method: "POST",
+        body: JSON.stringify({ adminId, email, password })
+      });
+      setDone(true);
+      setTimeout(() => navigate("/login"), 1500);
+    } catch (err) {
+      if (err.message && err.message.includes("already completed")) setLocked(true);
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (locked) {
+    return (
+      <main className="auth">
+        <form>
+          <h1>Setup Completed</h1>
+          <p className="success">The administrator account has already been initialized. This endpoint is permanently disabled.</p>
+          <button type="button" className="primary" onClick={() => navigate("/login")}>Go to Login</button>
+        </form>
+      </main>
+    );
+  }
+
+  if (done) {
+    return (
+      <main className="auth">
+        <form>
+          <h1>Admin Account Created</h1>
+          <p className="success">Administrator account successfully created! Setup is now locked.</p>
+          <p>Redirecting to login...</p>
+        </form>
+      </main>
+    );
+  }
+
+  return (
+    <main className="auth">
+      <form onSubmit={submit}>
+        <h1>Initialize Admin</h1>
+        <p style={{ color: "#a0aec0", fontSize: "14px" }}>
+          Configure the primary administrator account. Once set, this setup endpoint is permanently locked.
+        </p>
+        <input
+          placeholder="Admin User ID (e.g. admin)"
+          value={adminId}
+          onChange={e => setAdminId(e.target.value)}
+          pattern="[A-Za-z0-9_-]{3,64}"
+          minLength={3}
+          maxLength={64}
+          required
+        />
+        <input
+          type="email"
+          placeholder="Admin Email Address"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder="Admin Password (10+ chars, upper, lower, number)"
+          minLength={10}
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder="Confirm Admin Password"
+          minLength={10}
+          value={confirm}
+          onChange={e => setConfirm(e.target.value)}
+          required
+        />
+        {error && <p className="error">{error}</p>}
+        <button className="primary" disabled={busy}>
+          {busy ? "Configuring..." : "Create Admin Account"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function ForgotPassword() {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function send(e) {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      await api("/api/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email })
+      });
+      setSent(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth">
+      <form onSubmit={send}>
+        <h1>Reset Password</h1>
+        {sent ? (
+          <>
+            <p className="success">If an account exists for this email, a 6-digit code has been dispatched.</p>
+            <Link className="primary" to={`/reset-password?email=${encodeURIComponent(email)}`}>
+              Enter Verification Code
+            </Link>
+          </>
+        ) : (
+          <>
+            <p style={{ color: "#a0aec0", fontSize: "14px" }}>
+              Enter your registered email to receive a password reset verification code.
+            </p>
+            <input
+              type="email"
+              placeholder="Registered Email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              required
+            />
+            {error && <p className="error">{error}</p>}
+            <button className="primary" disabled={busy}>
+              {busy ? "Sending..." : "Send Verification Code"}
+            </button>
+          </>
+        )}
+        <p style={{ textAlign: "center", marginTop: "12px", fontSize: "14px" }}>
+          <Link to="/login">Back to Login</Link>
+        </p>
+      </form>
+    </main>
+  );
+}
+
+function ResetPassword() {
+  const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    setEmail(q.get("email") || "");
+  }, []);
+
+  async function reset(e) {
+    e.preventDefault();
+    setError("");
+    if (password !== confirm) return setError("Passwords do not match");
+    setBusy(true);
+
+    try {
+      await api("/api/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ otp, password })
+      });
+      setDone(true);
+      setTimeout(() => navigate("/login"), 1500);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth">
+      <form onSubmit={reset}>
+        <h1>Verify & Reset</h1>
+        <input
+          type="email"
+          placeholder="Email Address"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          required
+        />
+        <input
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="6-digit Verification Code"
+          maxLength={6}
+          value={otp}
+          onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+          required
+        />
+        <input
+          type="password"
+          placeholder="New Password (10+ chars)"
+          minLength={10}
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          placeholder="Confirm New Password"
+          minLength={10}
+          value={confirm}
+          onChange={e => setConfirm(e.target.value)}
+          required
+        />
+        {error && <p className="error">{error}</p>}
+        {done ? (
+          <p className="success">Password reset successful! Redirecting to login...</p>
+        ) : (
+          <button className="primary" disabled={busy}>
+            {busy ? "Resetting..." : "Set New Password"}
+          </button>
+        )}
+      </form>
+    </main>
+  );
+}
+
+function Detail() {
+  const { id } = useParams();
+  const { user } = useAuth();
+  const [book, setBook] = useState(null);
+  const [owned, setOwned] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [buying, setBuying] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    setLoading(true);
+    api(`/api/books/${id}`)
+      .then(res => setBook(res.book))
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+
+    if (user) {
+      api("/api/library")
+        .then(res => {
+          if (Array.isArray(res.books)) {
+            setOwned(res.books.some(b => b.id === id));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [id, user]);
+
+  async function handleBuy() {
+    if (!user) return navigate("/login");
+    setBuying(true);
+
+    try {
+      const orderData = await api("/api/orders/create", {
+        method: "POST",
+        body: JSON.stringify({ bookId: id })
+      });
+
+      if (!window.Razorpay) {
+        throw new Error("Razorpay SDK is not loaded. Please verify your internet connection or ad blocker.");
+      }
+
+      const options = {
+        key: orderData.key,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: orderData.name,
+        description: orderData.description,
+        order_id: orderData.order_id,
+        prefill: { email: user.email, name: user.name },
+        handler: async response => {
+          try {
+            await api("/api/orders/verify", {
+              method: "POST",
+              body: JSON.stringify({
+                bookId: id,
+                ...response
+              })
+            });
+            navigate("/library");
+          } catch (verifyErr) {
+            alert(`Payment verification error: ${verifyErr.message}`);
+          }
+        },
+        theme: { color: "#7c5cff" }
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on("payment.failed", resp => {
+        alert(`Payment failed: ${resp.error?.description || "Unknown error"}`);
+      });
+      rzp.open();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setBuying(false);
+    }
+  }
+
+  if (loading) return <main className="center"><p>Loading ebook details...</p></main>;
+  if (error) return <main className="center error"><p>{error}</p></main>;
+  if (!book) return <main className="center"><p>Book not found.</p></main>;
+
+  const isFree = book.type === "FREE" || Number(book.price || 0) === 0;
+  const canRead = owned || isFree || (user && user.role === "admin");
+
+  return (
+    <main className="detail">
+      <div className="cover big">
+        {book.coverUrl ? (
+          <img src={book.coverUrl} alt={book.title} />
+        ) : (
+          <b>MS<br />TECH<br />EBOOK</b>
+        )}
+      </div>
+      <div>
+        <small style={{ letterSpacing: "1.5px", fontWeight: 700, color: "#9b8cff" }}>
+          {book.category || "EBOOK"}
+        </small>
+        <h1>{book.title}</h1>
+        <p style={{ color: "#8b949e", marginBottom: "16px" }}>By {book.author || "MS Tech EBook"}</p>
+        <p style={{ whiteSpace: "pre-line" }}>{book.description}</p>
+        <h2 style={{ margin: "24px 0" }}>{isFree ? "Free" : `₹${Number(book.price || 0)}`}</h2>
+        {canRead ? (
+          <Link className="primary" to={`/read/${id}`}>Read Now</Link>
+        ) : (
+          <button className="primary" onClick={handleBuy} disabled={buying}>
+            {buying ? "Initiating..." : `Buy for ₹${Number(book.price || 0)}`}
+          </button>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function Library() {
+  const [books, setBooks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api("/api/library")
+      .then(res => setBooks(Array.isArray(res.books) ? res.books : []))
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <main className="container">
+      <h1>My Library</h1>
+      {error && <p className="error">{error}</p>}
+      {loading ? (
+        <p style={{ color: "#8b949e" }}>Loading your library...</p>
+      ) : books.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 0" }}>
+          <p style={{ color: "#8b949e", fontSize: "18px" }}>You have not added any ebooks to your library yet.</p>
+          <Link className="primary" to="/books" style={{ marginTop: "16px" }}>Browse Ebooks</Link>
+        </div>
+      ) : (
+        <Grid books={books} />
+      )}
+    </main>
+  );
+}
+
+function Admin() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [books, setBooks] = useState([]);
+  const [type, setType] = useState("PAID");
+  const [form, setForm] = useState({ title: "", author: "", category: "", description: "", price: "" });
+  const [cover, setCover] = useState(null);
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [editing, setEditing] = useState(null);
+
+  const loadBooks = () => {
+    api("/api/admin/books")
+      .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
+      .catch(e => setErr(e.message));
+  };
+
+  useEffect(() => {
+    if (!user || user.role !== "admin") {
+      navigate("/login");
+      return;
+    }
+    if (user.mustChangePassword) {
+      navigate("/change-password");
+      return;
+    }
+    loadBooks();
+  }, [user, navigate]);
+
+  const resetForm = () => {
+    setEditing(null);
+    setType("PAID");
+    setForm({ title: "", author: "", category: "", description: "", price: "" });
+    setCover(null);
+    setFile(null);
+    setErr("");
+  };
+
+  async function handleUpload(e) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg("");
+    setErr("");
+
+    try {
+      if (!cover || !file) throw new Error("Select both a cover image and PDF ebook");
+      if (file.type !== "application/pdf") throw new Error("Ebook file must be a PDF");
+      if (!["image/jpeg", "image/png", "image/webp"].includes(cover.type)) {
+        throw new Error("Cover must be JPG, PNG, or WEBP format");
+      }
+
+      await api("/api/admin/storage-cors", { method: "POST" }).catch(() => {});
+
+      const uploadDirect = async f => {
+        const u = await api("/api/admin/upload-url", {
+          method: "POST",
+          body: JSON.stringify({ name: f.name, type: f.type, size: f.size })
+        });
+        const putRes = await fetch(u.url, {
+          method: "PUT",
+          headers: { "Content-Type": f.type },
+          body: f
+        });
+        if (!putRes.ok) throw new Error(`Upload failed for ${f.name}`);
+        return u.path;
+      };
+
+      const coverPath = await uploadDirect(cover);
+      const storagePath = await uploadDirect(file);
+
+      await api("/api/admin/books", {
+        method: "POST",
+        body: JSON.stringify({
+          ...form,
+          type,
+          price: type === "FREE" ? 0 : Number(form.price),
+          coverPath,
+          storagePath
+        })
+      });
+
+      setMsg("Ebook successfully published!");
+      resetForm();
+      e.target.reset();
+      loadBooks();
+    } catch (x) {
+      setErr(x.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveEdit(e) {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+
+    try {
+      await api(`/api/admin/books/${editing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...form,
+          type,
+          price: type === "FREE" ? 0 : Number(form.price),
+          status: editing.status
+        })
+      });
+      setMsg("Book updated successfully.");
+      resetForm();
+      loadBooks();
+    } catch (x) {
+      setErr(x.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!window.confirm("Permanently delete this ebook and its stored files?")) return;
+    try {
+      await api(`/api/admin/books/${id}`, { method: "DELETE" });
+      setMsg("Book deleted.");
+      loadBooks();
+    } catch (x) {
+      setErr(x.message);
+    }
+  }
+
+  async function handleToggleStatus(b) {
+    try {
+      const nextStatus = b.status === "ACTIVE" ? "DRAFT" : "ACTIVE";
+      await api(`/api/admin/books/${b.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...b, status: nextStatus })
+      });
+      setMsg(nextStatus === "ACTIVE" ? "Book published." : "Book unpublished.");
+      loadBooks();
+    } catch (x) {
+      setErr(x.message);
+    }
+  }
+
+  function startEdit(b) {
+    setEditing(b);
+    setType(b.type || "PAID");
+    setForm({
+      title: b.title || "",
+      author: b.author || "",
+      category: b.category || "",
+      description: b.description || "",
+      price: b.price || ""
+    });
+    setMsg("");
+    setErr("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  return (
+    <main className="admin-shell">
+      <div className="admin-top">
+        <div>
+          <span className="eyebrow">MS TECH EBOOK · ADMIN</span>
+          <h1>Dashboard</h1>
+          <p>Manage your digital catalog, pricing, and book distribution.</p>
+        </div>
+        <div className="admin-top-actions">
+          <Link className="admin-secondary" to="/books">View Store</Link>
+        </div>
+      </div>
+
+      <div className="admin-stats">
+        <div><span>Total Ebooks</span><strong>{books.length}</strong></div>
+        <div><span>Active</span><strong>{books.filter(b => b.status === "ACTIVE").length}</strong></div>
+        <div><span>Free</span><strong>{books.filter(b => b.type === "FREE").length}</strong></div>
+        <div><span>Paid</span><strong>{books.filter(b => b.type === "PAID").length}</strong></div>
+      </div>
+
+      <div className="admin-grid">
+        <section className="admin-panel">
+          <div className="panel-title">
+            <div>
+              <span className="eyebrow">{editing ? "EDITING MODE" : "CATALOG MANAGEMENT"}</span>
+              <h2>{editing ? `Editing: ${editing.title}` : "Publish New Ebook"}</h2>
+            </div>
+            {editing && <button className="admin-secondary" onClick={resetForm}>Cancel</button>}
+          </div>
+
+          <form className="admin-form" onSubmit={editing ? handleSaveEdit : handleUpload}>
+            <div className="field">
+              <label>Book Title *</label>
+              <input
+                required
+                value={form.title}
+                onChange={e => setForm({ ...form, title: e.target.value })}
+                placeholder="e.g. Master Modern Full-Stack"
+              />
+            </div>
+
+            <div className="field-row">
+              <div className="field">
+                <label>Author</label>
+                <input
+                  value={form.author}
+                  onChange={e => setForm({ ...form, author: e.target.value })}
+                  placeholder="Author Name"
+                />
+              </div>
+              <div className="field">
+                <label>Category</label>
+                <input
+                  value={form.category}
+                  onChange={e => setForm({ ...form, category: e.target.value })}
+                  placeholder="Technology, Engineering..."
+                />
+              </div>
+            </div>
+
+            <div className="field">
+              <label>Description</label>
+              <textarea
+                rows={5}
+                value={form.description}
+                onChange={e => setForm({ ...form, description: e.target.value })}
+                placeholder="Detailed summary of the book..."
+              />
+            </div>
+
+            <div className="field-row">
+              <div className="field">
+                <label>Access Type *</label>
+                <select value={type} onChange={e => setType(e.target.value)}>
+                  <option value="PAID">Paid Ebook</option>
+                  <option value="FREE">Free Ebook</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Price (₹) {type === "PAID" && "*"}</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  disabled={type === "FREE"}
+                  required={type === "PAID"}
+                  value={type === "FREE" ? "" : form.price}
+                  onChange={e => setForm({ ...form, price: e.target.value })}
+                  placeholder="499"
+                />
+              </div>
+            </div>
+
+            {!editing && (
+              <div className="upload-grid">
+                <label className="upload-box">
+                  <span>Cover Image *</span>
+                  <input
+                    type="file"
+                    accept=".jpg,.jpeg,.png,.webp,image/*"
+                    required
+                    onChange={e => setCover(e.target.files?.[0] || null)}
+                  />
+                  <small>{cover ? cover.name : "JPG, PNG, WEBP (Max 10MB)"}</small>
+                </label>
+                <label className="upload-box">
+                  <span>PDF Document *</span>
+                  <input
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    required
+                    onChange={e => setFile(e.target.files?.[0] || null)}
+                  />
+                  <small>{file ? file.name : "PDF only (Max 100MB)"}</small>
+                </label>
+              </div>
+            )}
+
+            {err && <p className="error">{err}</p>}
+            {msg && <p className="success">{msg}</p>}
+
+            <button className="admin-primary" disabled={busy}>
+              {busy ? "Processing..." : editing ? "Save Changes" : "Upload & Publish Ebook"}
+            </button>
+          </form>
+        </section>
+
+        <aside className="admin-panel admin-help">
+          <span className="eyebrow">GUIDELINES</span>
+          <h2>Secure Distribution</h2>
+          <ol>
+            <li>Files are kept in private Firebase Storage.</li>
+            <li>Readers receive timed signed URLs only after authorization.</li>
+            <li>Set prices in whole Rupees (INR).</li>
+            <li>Use high-resolution 3:4 aspect ratio covers for best appearance.</li>
+          </ol>
+        </aside>
+      </div>
+
+      <section className="admin-panel catalog">
+        <div className="panel-title">
+          <div>
+            <span className="eyebrow">CATALOG</span>
+            <h2>Manage Ebooks ({books.length})</h2>
+          </div>
+        </div>
+
+        {books.length > 0 ? (
+          <div className="catalog-list">
+            {books.map(b => (
+              <div className="catalog-row" key={b.id}>
+                <div className="catalog-cover">
+                  {b.coverUrl ? <img src={b.coverUrl} alt="" /> : <span>PDF</span>}
+                </div>
+                <div className="catalog-main">
+                  <strong>{b.title}</strong>
+                  <span>{b.author || "MS Tech EBook"} · {b.category || "General"}</span>
+                </div>
+                <div className="catalog-meta">
+                  <b className={b.type === "FREE" ? "free" : "paid"}>
+                    {b.type === "FREE" ? "FREE" : `₹${Number(b.price || 0)}`}
+                  </b>
+                  <span className={b.status === "ACTIVE" ? "published" : "draft"}>
+                    {b.status === "ACTIVE" ? "Active" : "Draft"}
+                  </span>
+                </div>
+                <div className="catalog-actions">
+                  <button onClick={() => startEdit(b)}>Edit</button>
+                  <button onClick={() => handleToggleStatus(b)}>
+                    {b.status === "ACTIVE" ? "Unpublish" : "Publish"}
+                  </button>
+                  <Link to={`/read/${b.id}`} style={{ padding: "8px 10px", borderRadius: "8px", background: "#151b29", border: "1px solid #30384b", fontSize: "12px" }}>
+                    Preview
+                  </Link>
+                  <button className="danger" onClick={() => handleDelete(b.id)}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="catalog-empty">
+            <h3>No ebooks uploaded yet</h3>
+            <p>Upload your first ebook using the form above.</p>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function Reader() {
+  const { id } = useParams();
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api(`/api/books/${id}/secure-url`)
+      .then(res => setUrl(res.url))
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [id]);
+
+  useEffect(() => {
+    const preventAction = e => e.preventDefault();
+    const preventKeys = e => {
+      if ((e.ctrlKey || e.metaKey) && ["c", "x", "s", "p", "u"].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+      }
+    };
+    ["contextmenu", "copy", "cut", "selectstart"].forEach(ev => document.addEventListener(ev, preventAction));
+    document.addEventListener("keydown", preventKeys);
+    return () => {
+      ["contextmenu", "copy", "cut", "selectstart"].forEach(ev => document.removeEventListener(ev, preventAction));
+      document.removeEventListener("keydown", preventKeys);
+    };
+  }, []);
+
+  if (error) return <main className="center error"><p>{error}</p></main>;
+
+  return (
+    <main className="reader">
+      <div className="readerbar">
+        <span>Protected Reader</span>
+        <Link to="/library" style={{ background: "#202637", padding: "6px 14px", borderRadius: "6px" }}>
+          Back to Library
+        </Link>
+      </div>
+      {loading ? (
+        <div className="center"><p>Preparing your reading session...</p></div>
+      ) : url ? (
+        <iframe title="Protected Ebook Reader" src={`${url}#toolbar=0&navpanes=0`} />
+      ) : (
+        <div className="center error"><p>Could not load the ebook file.</p></div>
+      )}
+    </main>
+  );
+}
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    checkAuth()
+      .then(data => setUser(data.user))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return (
+      <main className="center">
+        <p style={{ color: "#8b949e" }}>Loading MS Tech EBook...</p>
+      </main>
+    );
+  }
+
+  return (
+    <AuthContext.Provider value={{ user, setUser }}>
+      <Layout>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/books" element={<Books />} />
+          <Route path="/books/:id" element={<Detail />} />
+          <Route path="/login" element={<AuthForm />} />
+          <Route path="/register" element={<AuthForm register />} />
+          <Route path="/change-password" element={user ? <ChangePassword /> : <Navigate to="/login" replace />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/setadmin" element={<SetAdmin />} />
+          <Route path="/library" element={user ? <Library /> : <Navigate to="/login" replace />} />
+          <Route path="/read/:id" element={user ? <Reader /> : <Navigate to="/login" replace />} />
+          <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/login" replace />} />
+          <Route path="/admin/admin" element={<Navigate to="/admin" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Layout>
+    </AuthContext.Provider>
+  );
+}
+
+const rootEl = document.getElementById("root");
+if (rootEl) {
+  ReactDOM.createRoot(rootEl).render(
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  );
+}
