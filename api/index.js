@@ -712,6 +712,7 @@ router.post("/auth/login", async (req, res) => {
       }
     }
 
+    await update("users/" + userId, { lastLoginAt: now(), updatedAt: now() });
     const session = await createSession(userId);
     setSession(res, session);
     res.json({
@@ -1037,6 +1038,138 @@ router.get("/admin/books", async (req, res) => {
   }
 });
 
+
+router.get("/admin/analytics", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    res.set("Cache-Control", "no-store, max-age=0");
+
+    const db = requireDb();
+    const [usersSnap, booksSnap, ordersSnap, purchasesSnap] = await Promise.all([
+      db.ref("users").once("value"),
+      db.ref("books").once("value"),
+      db.ref("orders").once("value"),
+      db.ref("purchases").once("value"),
+    ]);
+
+    const users = [];
+    usersSnap.forEach(child => users.push({ id: child.key, ...(child.val() || {}) }));
+    const books = [];
+    booksSnap.forEach(child => books.push({ id: child.key, ...(child.val() || {}) }));
+    const orders = [];
+    ordersSnap.forEach(child => orders.push({ id: child.key, ...(child.val() || {}) }));
+    const purchases = [];
+    purchasesSnap.forEach(child => purchases.push({ id: child.key, ...(child.val() || {}) }));
+
+    const customerUsers = users.filter(u => u.role !== "admin");
+    const paidOrders = orders.filter(o => String(o.status || "").toUpperCase() === "PAID");
+    const openOrders = orders.filter(o => String(o.status || "").toUpperCase() !== "PAID");
+    const paidPurchases = purchases.filter(p => String(p.status || "").toUpperCase() === "PAID");
+    const revenue = paidOrders.reduce((sum, o) => sum + Number(o.amount || 0), 0);
+    const purchaseRevenue = paidPurchases.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const totalBuyAmount = revenue || purchaseRevenue;
+    const uniqueBuyers = new Set(paidOrders.map(o => o.userId).filter(Boolean));
+    if (!uniqueBuyers.size) paidPurchases.forEach(p => { if (p.userId) uniqueBuyers.add(p.userId); });
+
+    const nowTs = now();
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const dayStart = startOfDay.getTime();
+    const last7Start = nowTs - 7 * 24 * 60 * 60 * 1000;
+    const last30Start = nowTs - 30 * 24 * 60 * 60 * 1000;
+    const sumSince = since => paidOrders.filter(o => Number(o.createdAt || 0) >= since).reduce((sum, o) => sum + Number(o.amount || 0), 0);
+
+    const topBookMap = new Map();
+    paidOrders.forEach(order => {
+      const bookId = String(order.bookId || "");
+      if (!bookId) return;
+      const current = topBookMap.get(bookId) || { bookId, sales: 0, revenue: 0 };
+      current.sales += 1;
+      current.revenue += Number(order.amount || 0);
+      topBookMap.set(bookId, current);
+    });
+    const bookMap = new Map(books.map(book => [book.id, book]));
+    const topBooks = [...topBookMap.values()]
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 7)
+      .map(item => ({
+        bookId: item.bookId,
+        title: safeText(bookMap.get(item.bookId)?.title, MAX_BOOK_TITLE) || "Deleted book",
+        sales: item.sales,
+        revenue: item.revenue
+      }));
+
+    const dailyRevenue = [];
+    for (let i = 6; i >= 0; i -= 1) {
+      const day = new Date(dayStart - i * 24 * 60 * 60 * 1000);
+      const next = day.getTime() + 24 * 60 * 60 * 1000;
+      const amount = paidOrders
+        .filter(o => Number(o.createdAt || 0) >= day.getTime() && Number(o.createdAt || 0) < next)
+        .reduce((sum, o) => sum + Number(o.amount || 0), 0);
+      dailyRevenue.push({
+        date: day.toISOString().slice(5, 10),
+        amount
+      });
+    }
+
+    const activeBooks = books.filter(b => String(b.status || "").toUpperCase() === "ACTIVE").length;
+    const paidBooks = books.filter(b => String(b.type || "").toUpperCase() === "PAID" && Number(b.price || 0) > 0).length;
+    const freeBooks = books.filter(b => String(b.type || "").toUpperCase() === "FREE" || Number(b.price || 0) === 0).length;
+    const blockedUsers = customerUsers.filter(u => String(u.status || "").toUpperCase() !== "ACTIVE").length;
+    const totalUsers = customerUsers.length;
+    const averageOrder = paidOrders.length ? totalBuyAmount / paidOrders.length : 0;
+
+    const recentOrders = [...paidOrders]
+      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+      .slice(0, 8)
+      .map(order => {
+        const customer = users.find(u => u.id === order.userId);
+        const book = bookMap.get(order.bookId);
+        return {
+          id: order.id,
+          userEmail: validEmail(customer?.email) ? customer.email : "—",
+          userName: safeText(customer?.name, 120) || "Customer",
+          bookTitle: safeText(book?.title, MAX_BOOK_TITLE) || "Deleted book",
+          amount: Number(order.amount || 0),
+          paymentId: safeText(order.paymentId, 100) || "—",
+          orderId: safeText(order.razorpayOrderId || order.id, 100),
+          createdAt: Number(order.createdAt || 0)
+        };
+      });
+
+    res.json({
+      ok: true,
+      overview: {
+        totalUsers,
+        activeUsers: customerUsers.filter(u => String(u.status || "").toUpperCase() === "ACTIVE").length,
+        blockedUsers,
+        adminUsers: users.filter(u => u.role === "admin").length,
+        totalBooks: books.length,
+        activeBooks,
+        paidBooks,
+        freeBooks,
+        totalOrders: orders.length,
+        paidOrders: paidOrders.length,
+        openOrders: openOrders.length,
+        totalPurchases: paidPurchases.length,
+        uniqueBuyers: uniqueBuyers.size,
+        totalBuyAmount: totalBuyAmount,
+        averageOrderValue: averageOrder,
+        todayRevenue: sumSince(dayStart),
+        last7DaysRevenue: sumSince(last7Start),
+        last30DaysRevenue: sumSince(last30Start),
+        paymentSuccessRate: orders.length ? (paidOrders.length / orders.length) * 100 : 0
+      },
+      dailyRevenue,
+      topBooks,
+      recentOrders
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || "Could not load administrator analytics" });
+  }
+});
+
 router.get("/admin/users", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
@@ -1055,12 +1188,48 @@ router.get("/admin/users", async (req, res) => {
         status: safeText(data.status, 30) || "ACTIVE",
         createdAt: Number(data.createdAt || 0),
         updatedAt: Number(data.updatedAt || 0),
+        lastLoginAt: Number(data.lastLoginAt || 0),
       });
     });
     users.sort((a, b) => b.createdAt - a.createdAt);
     res.json({ users: users.slice(0, limit) });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load users" });
+  }
+});
+
+router.patch("/admin/users/:id/status", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const userId = key(req.params.id);
+    if (!userId || userId === auth.userId) return res.status(400).json({ error: "You cannot block your own administrator account." });
+
+    const user = await get("users/" + userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    if (user.role === "admin") return res.status(403).json({ error: "Administrator accounts cannot be blocked from this panel." });
+
+    const nextStatus = String(req.body?.status || "").toUpperCase() === "BLOCKED" ? "BLOCKED" : "ACTIVE";
+    await update("users/" + userId, {
+      status: nextStatus,
+      updatedAt: now(),
+      updatedBy: auth.user.email
+    });
+
+    if (nextStatus === "BLOCKED") {
+      const sessions = await requireDb().ref("sessions").orderByChild("userId").equalTo(userId).once("value");
+      const sessionUpdates = {};
+      sessions.forEach(child => {
+        sessionUpdates["sessions/" + child.key + "/revoked"] = true;
+        sessionUpdates["sessions/" + child.key + "/revokedAt"] = now();
+      });
+      if (Object.keys(sessionUpdates).length) await requireDb().ref().update(sessionUpdates);
+    }
+
+    await audit(nextStatus === "BLOCKED" ? "USER_BLOCKED" : "USER_UNBLOCKED", auth, { userId });
+    res.json({ ok: true, status: nextStatus });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not update user status" });
   }
 });
 
@@ -1090,6 +1259,7 @@ router.get("/admin/orders", async (req, res) => {
         amountPaise: Number(order.amountPaise || 0),
         status: safeText(order.status, 30),
         razorpayOrderId: safeText(order.razorpayOrderId || order.id, 100),
+        paymentId: safeText(order.paymentId, 100),
         createdAt: Number(order.createdAt || 0),
         updatedAt: Number(order.updatedAt || 0),
       });
