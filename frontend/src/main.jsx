@@ -737,7 +737,7 @@ function Library() {
 }
 
 function Admin() {
-  const { user } = useAuth();
+  const { user, setUser } = useAuth();
   const navigate = useNavigate();
   const [books, setBooks] = useState([]);
   const [type, setType] = useState("PAID");
@@ -847,7 +847,14 @@ function Admin() {
   const loadBooks = () => {
     api("/api/admin/books")
       .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
-      .catch(e => setErr(e.message));
+      .catch(e => {
+        if (e.status === 401) {
+          setUser(null);
+          navigate("/admin", { replace: true });
+          return;
+        }
+        setErr(e.message);
+      });
   };
 
   useEffect(() => {
@@ -918,6 +925,11 @@ function Admin() {
       });
       loadBooks();
     } catch (x) {
+      if (x.status === 401) {
+        setUser(null);
+        navigate("/admin", { replace: true });
+        return;
+      }
       for (const storagePath of uploadedPaths) {
         try {
           await api("/api/admin/upload-file", {
