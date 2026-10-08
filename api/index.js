@@ -594,6 +594,26 @@ app.get("/api/books/:id", async (req, res) => {
   }
 });
 
+app.post("/api/admin/storage-cors", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const origin = String(process.env.PUBLIC_ORIGIN || "").trim();
+    if (!origin) return res.status(500).json({ error: "PUBLIC_ORIGIN is not configured" });
+    const origins = [origin];
+    if (/^https?:\/\/localhost(?::\\d+)?$/.test(origin)) origins.push("http://localhost:5173");
+    await bucket.setCorsConfiguration([{
+      origin: origins,
+      method: ["GET", "HEAD", "PUT", "POST", "OPTIONS"],
+      responseHeader: ["Content-Type", "x-goog-resumable", "x-goog-generation"],
+      maxAgeSeconds: 3600
+    }]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not configure Firebase Storage CORS" });
+  }
+});
+
 app.post("/api/admin/upload-url", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
