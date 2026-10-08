@@ -1144,7 +1144,7 @@ function Admin() {
             </div>
 
             {err && <p className="error">{err}</p>}
-            {msg && <p className="success">{msg}</p>
+            {msg && <p className="success">{msg}</p>}
 
             <button className="admin-primary" disabled={busy}>
               {busy ? "Processing..." : editing ? "Save Changes" : "Upload & Publish Ebook"}
