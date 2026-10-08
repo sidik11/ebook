@@ -37,7 +37,7 @@ All client RTDB reads/writes are denied. The Vercel API uses Firebase Admin SDK 
 - CSRF token validation on state-changing authenticated requests
 - current RTDB user record is the source of truth for admin authorization
 - optional admin TOTP verification
-- Redis rate limits
+- per-IP authentication throttling (in-memory per warm function instance)
 - Razorpay signature + captured-status + amount verification
 - Razorpay webhook signature verification and reconciliation
 - idempotent purchase/payment handling
@@ -62,8 +62,6 @@ RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
 RAZORPAY_WEBHOOK_SECRET=
 
-UPSTASH_REDIS_REST_URL=
-UPSTASH_REDIS_REST_TOKEN=
 
 PUBLIC_ORIGIN=https://YOUR_DOMAIN
 ADMIN_INITIAL_EMAIL=
@@ -107,7 +105,7 @@ Before accepting real customer payments:
 - set `PUBLIC_ORIGIN` to the exact origin
 - configure a strong admin TOTP secret
 - configure the Razorpay webhook
-- configure distributed rate limiting if running multiple concurrent Vercel instances
+- add a distributed rate limiter if you expect multiple concurrent function instances or high-volume login traffic
 - rotate any credentials that were ever exposed
 - keep RTDB and Storage rules closed
 - back up RTDB before migrations
