@@ -53,7 +53,7 @@ function Admin({user}){
  const reset=()=>{setEditing(null);setType("PAID");setForm({title:"",author:"",category:"",description:"",price:""});setCover(null);setFile(null);setErr("")};
  async function upload(e){e.preventDefault();setBusy(true);setMsg("");setErr("");
   try{if(!cover||!file)throw Error("Select both a cover image and PDF ebook");if(file.type!=="application/pdf")throw Error("Ebook must be a PDF");if(!["image/jpeg","image/png","image/webp"].includes(cover.type))throw Error("Cover must be JPG, PNG or WEBP");
-   const me=await auth();const up=async f=>{const u=await api("/api/admin/upload-url",{method:"POST",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({name:f.name,type:f.type,size:f.size})});const r=await fetch(u.url,{method:"PUT",headers:{"Content-Type":f.type},body:f});if(!r.ok)throw Error("File upload failed");return u.path};
+   const me=await auth();const up=async f=>{const u=await api("/api/admin/upload-url",{method:"POST",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({name:f.name,type:f.type,size:f.size})});if(f.size>Number(u.maxBytes||0))throw Error("Selected file is too large");const r=await fetch(u.url,{method:"PUT",headers:{"Content-Type":f.type},body:f});if(!r.ok)throw Error("File upload failed");return u.path};
    const coverPath=await up(cover),storagePath=await up(file);if(!coverPath||!storagePath)throw Error("Upload did not return storage paths");await api("/api/admin/books",{method:"POST",headers:{"X-CSRF-Token":me.csrfToken},body:JSON.stringify({...form,type,price:type==="FREE"?0:Number(form.price),coverPath,storagePath})});
    setMsg("Ebook uploaded successfully.");reset();e.target.reset();await load()
   }catch(x){setErr(x.message)}finally{setBusy(false)}
