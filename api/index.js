@@ -601,7 +601,7 @@ app.post("/api/admin/storage-cors", async (req, res) => {
     const origin = String(process.env.PUBLIC_ORIGIN || "").trim();
     if (!origin) return res.status(500).json({ error: "PUBLIC_ORIGIN is not configured" });
     const origins = [origin];
-    if (/^https?:\/\/localhost(?::\\d+)?$/.test(origin)) origins.push("http://localhost:5173");
+    if (/^https?:\/\/localhost(?::\d+)?$/.test(origin)) origins.push("http://localhost:5173");
     await bucket.setCorsConfiguration([{
       origin: origins,
       method: ["GET", "HEAD", "PUT", "POST", "OPTIONS"],
