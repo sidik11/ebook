@@ -1,4 +1,8 @@
-import React, { useEffect, useState, createContext, useContext } from "react";
+import React, { useEffect, useRef, useState, createContext, useContext } from "react";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
+
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import "./styles.css";
@@ -1233,13 +1237,77 @@ function Reader() {
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [pdfDoc, setPdfDoc] = useState(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [numPages, setNumPages] = useState(0);
+  const [scale, setScale] = useState(1.2);
+  const canvasRef = useRef(null);
 
   useEffect(() => {
+    let active = true;
     api(`/api/books/${id}/secure-url`)
-      .then(res => setUrl(res.url))
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+      .then(res => { if (active) setUrl(res.url); })
+      .catch(e => { if (active) setError(e.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, [id]);
+
+  useEffect(() => {
+    if (!url) return;
+    let active = true;
+    let loadingTask = null;
+    setPdfLoading(true);
+    setError("");
+    setPageNumber(1);
+
+    (async () => {
+      try {
+        const response = await fetch(url, { credentials: "omit", cache: "no-store" });
+        if (!response.ok) throw new Error(`Unable to load protected ebook (HTTP ${response.status}).`);
+        const buffer = await response.arrayBuffer();
+        if (!active) return;
+        loadingTask = getDocument({ data: buffer });
+        const document = await loadingTask.promise;
+        if (!active) {
+          await document.destroy();
+          return;
+        }
+        setPdfDoc(document);
+        setNumPages(document.numPages);
+      } catch (e) {
+        if (active) setError(e.message || "Could not open the protected ebook.");
+      } finally {
+        if (active) setPdfLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+      try { loadingTask?.destroy(); } catch {}
+    };
+  }, [url]);
+
+  useEffect(() => {
+    if (!pdfDoc || !canvasRef.current) return;
+    let active = true;
+    const render = async () => {
+      try {
+        const page = await pdfDoc.getPage(pageNumber);
+        if (!active) return;
+        const viewport = page.getViewport({ scale });
+        const canvas = canvasRef.current;
+        const context = canvas.getContext("2d", { alpha: false });
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        await page.render({ canvasContext: context, viewport }).promise;
+      } catch (e) {
+        if (active) setError(e.message || "Unable to render this page.");
+      }
+    };
+    render();
+    return () => { active = false; };
+  }, [pdfDoc, pageNumber, scale]);
 
   useEffect(() => {
     const preventAction = e => e.preventDefault();
@@ -1262,25 +1330,34 @@ function Reader() {
       blockEvents.forEach(ev => document.removeEventListener(ev, preventAction, true));
       document.removeEventListener("keydown", preventKeys, true);
       document.documentElement.classList.remove("protected-reader-active");
+      try { pdfDoc?.destroy(); } catch {}
     };
-  }, []);
+  }, [pdfDoc]);
 
   if (error) return <main className="center error"><p>{error}</p></main>;
 
   return (
-    <main className="reader">
+    <main className="reader protected-reader" onContextMenu={e => e.preventDefault()}>
       <div className="readerbar">
-        <span>Protected Reader</span>
-        <Link to="/library" style={{ background: "#202637", padding: "6px 14px", borderRadius: "6px" }}>
-          Back to Library
-        </Link>
+        <span>Protected Reader · Copy Disabled</span>
+        <div className="reader-controls">
+          <button type="button" onClick={() => setScale(v => Math.max(.75, Number((v - .1).toFixed(1))))}>−</button>
+          <span>{Math.round(scale * 100)}%</span>
+          <button type="button" onClick={() => setScale(v => Math.min(2.2, Number((v + .1).toFixed(1))))}>+</button>
+          <button type="button" disabled={pageNumber <= 1} onClick={() => setPageNumber(v => Math.max(1, v - 1))}>‹</button>
+          <span>{numPages ? `${pageNumber} / ${numPages}` : "—"}</span>
+          <button type="button" disabled={!numPages || pageNumber >= numPages} onClick={() => setPageNumber(v => Math.min(numPages, v + 1))}>›</button>
+          <Link to="/library">Back to Library</Link>
+        </div>
       </div>
-      {loading ? (
-        <div className="center"><p>Preparing your reading session...</p></div>
-      ) : url ? (
-        <div className="reader-frame" onContextMenu={e => e.preventDefault()}>
-          <iframe title="Protected Ebook Reader" src={`${url}#toolbar=0&navpanes=0&view=FitH`} sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer" />
-          <div className="reader-shield" aria-hidden="true" />
+
+      {loading || pdfLoading ? (
+        <div className="center"><div className="reader-loading"><span className="reader-spinner" />Preparing protected pages…</div></div>
+      ) : pdfDoc ? (
+        <div className="canvas-reader" onContextMenu={e => e.preventDefault()}>
+          <div className="canvas-page" onContextMenu={e => e.preventDefault()}>
+            <canvas ref={canvasRef} aria-label={`Protected ebook page ${pageNumber}`} />
+          </div>
         </div>
       ) : (
         <div className="center error"><p>Could not load the ebook file.</p></div>
