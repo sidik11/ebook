@@ -1176,19 +1176,36 @@ router.get("/admin/users", async (req, res) => {
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
-    const snap = await requireDb().ref("users").once("value");
+    const db = requireDb();
+    const [snap, purchasesSnap] = await Promise.all([
+      db.ref("users").once("value"),
+      db.ref("purchases").once("value")
+    ]);
+    const purchaseStats = new Map();
+    purchasesSnap.forEach(child => {
+      const data = child.val() || {};
+      if (String(data.status || "").toUpperCase() !== "PAID" || !data.userId) return;
+      const current = purchaseStats.get(data.userId) || { purchases: 0, spent: 0 };
+      current.purchases += 1;
+      current.spent += Number(data.amount || 0);
+      purchaseStats.set(data.userId, current);
+    });
+
     const users = [];
     snap.forEach(child => {
       const data = child.val() || {};
+      const stats = purchaseStats.get(child.key) || { purchases: 0, spent: 0 };
       users.push({
         id: child.key,
         name: safeText(data.name, 120),
         email: validEmail(data.email) ? data.email : "",
         role: data.role === "admin" ? "admin" : "user",
-        status: safeText(data.status, 30) || "ACTIVE",
+        status: String(data.status || "ACTIVE").toUpperCase() === "BLOCKED" ? "BLOCKED" : "ACTIVE",
         createdAt: Number(data.createdAt || 0),
         updatedAt: Number(data.updatedAt || 0),
         lastLoginAt: Number(data.lastLoginAt || 0),
+        purchases: stats.purchases,
+        spent: stats.spent
       });
     });
     users.sort((a, b) => b.createdAt - a.createdAt);
