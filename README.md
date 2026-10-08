@@ -45,7 +45,7 @@ All client RTDB reads/writes are denied. The Vercel API uses Firebase Admin SDK 
 - security headers and HSTS
 - admin audit log
 
-Authentication endpoints use a shared RTDB-backed transaction limiter. Browser copy/right-click/print controls are only deterrence. A PDF delivered to a browser cannot be made literally impossible to screenshot or extract.
+Authentication endpoints use a shared RTDB-backed transaction limiter. The reader renders authorized PDF pages into a canvas without a selectable text layer or native PDF toolbar, and blocks right-click/copy/cut/save/print shortcuts while the reader is open. This is strong browser-level deterrence, not absolute DRM: anything displayed on a user's screen can still be photographed or captured.
 
 ## Vercel environment variables
 
@@ -111,6 +111,7 @@ The admin panel supports:
 - PDF upload
 - cover upload
 - live upload progress for each file
+- protected canvas-based PDF reader with page controls and no native PDF toolbar
 - FREE / PAID pricing
 - metadata editing
 - publish / unpublish
