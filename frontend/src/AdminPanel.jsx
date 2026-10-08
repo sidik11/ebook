@@ -26,6 +26,10 @@ import {
   UploadCloud,
   Users,
   X,
+  Ban,
+  UserCheck,
+  Receipt,
+  TrendingUp,
 } from "lucide-react";
 import { api, useAuth } from "./main";
 
@@ -43,6 +47,20 @@ const emptyUploadState = {
   pdf: { status: "idle", progress: 0, message: "Waiting" }
 };
 
+const emptyAnalytics = {
+  overview: {
+    totalUsers: 0, activeUsers: 0, blockedUsers: 0, adminUsers: 0,
+    totalBooks: 0, activeBooks: 0, paidBooks: 0, freeBooks: 0,
+    totalOrders: 0, paidOrders: 0, openOrders: 0, totalPurchases: 0,
+    uniqueBuyers: 0, totalBuyAmount: 0, averageOrderValue: 0,
+    todayRevenue: 0, last7DaysRevenue: 0, last30DaysRevenue: 0,
+    paymentSuccessRate: 0
+  },
+  dailyRevenue: [],
+  topBooks: [],
+  recentOrders: []
+};
+
 function AdminPanel() {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
@@ -53,12 +71,15 @@ function AdminPanel() {
   const [books, setBooks] = useState([]);
   const [orders, setOrders] = useState([]);
   const [users, setUsers] = useState([]);
+  const [analytics, setAnalytics] = useState(emptyAnalytics);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [typeFilter, setTypeFilter] = useState("ALL");
+  const [userQuery, setUserQuery] = useState("");
+  const [userStatusFilter, setUserStatusFilter] = useState("ALL");
   const [notice, setNotice] = useState({ type: "", text: "" });
 
   const [form, setForm] = useState({
@@ -116,11 +137,29 @@ function AdminPanel() {
     }
   };
 
+  const loadAnalytics = async () => {
+    try {
+      const data = await api("/api/admin/analytics");
+      setAnalytics({
+        ...emptyAnalytics,
+        ...data,
+        overview: { ...emptyAnalytics.overview, ...(data?.overview || {}) },
+        dailyRevenue: Array.isArray(data?.dailyRevenue) ? data.dailyRevenue : [],
+        topBooks: Array.isArray(data?.topBooks) ? data.topBooks : [],
+        recentOrders: Array.isArray(data?.recentOrders) ? data.recentOrders : []
+      });
+    } catch (err) {
+      if (err.status === 401 || err.status === 403) throw err;
+      setAnalytics(emptyAnalytics);
+      showNotice("error", err.message || "Analytics could not be loaded.");
+    }
+  };
+
   const loadAll = async (quiet = false) => {
     if (quiet) setRefreshing(true);
     else setLoading(true);
     try {
-      await Promise.all([loadBooks(), loadOrders(), loadUsers()]);
+      await Promise.all([loadBooks(), loadOrders(), loadUsers(), loadAnalytics()]);
       setInitialized(true);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
@@ -388,6 +427,26 @@ function AdminPanel() {
     }
   };
 
+  const toggleUserStatus = async person => {
+    if (person.role === "admin") {
+      showNotice("error", "Administrator accounts cannot be blocked from this panel.");
+      return;
+    }
+    const nextStatus = String(person.status || "").toUpperCase() === "BLOCKED" ? "ACTIVE" : "BLOCKED";
+    const action = nextStatus === "BLOCKED" ? "block" : "unblock";
+    if (nextStatus === "BLOCKED" && !window.confirm('Block "' + (person.name || person.email) + '"? They will be signed out and cannot log in until unblocked.')) return;
+    try {
+      await api("/api/admin/users/" + person.id + "/status", {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus })
+      });
+      await Promise.all([loadUsers(), loadAnalytics()]);
+      showNotice("success", (person.name || "User") + " was " + (action === "block" ? "blocked." : "unblocked."));
+    } catch (err) {
+      showNotice("error", err.message || "Could not update user status.");
+    }
+  };
+
   const deleteBook = async book => {
     if (!window.confirm('Delete "' + book.title + '" and remove its stored files?')) return;
     try {
@@ -421,6 +480,20 @@ function AdminPanel() {
     paid: books.filter(b => b.type === "PAID" && Number(b.price || 0) > 0).length,
     free: books.filter(b => b.type === "FREE" || Number(b.price || 0) === 0).length,
   };
+
+  const filteredUsers = useMemo(() => {
+    const q = userQuery.toLowerCase().trim();
+    return users.filter(person => {
+      const matchesQuery = !q || [person.name, person.email].filter(Boolean).join(" ").toLowerCase().includes(q);
+      const normalizedStatus = String(person.status || "ACTIVE").toUpperCase();
+      const matchesStatus = userStatusFilter === "ALL" || normalizedStatus === userStatusFilter;
+      return matchesQuery && matchesStatus;
+    });
+  }, [users, userQuery, userStatusFilter]);
+
+  const analyticsOverview = analytics.overview || emptyAnalytics.overview;
+  const dailyMax = Math.max(1, ...analytics.dailyRevenue.map(item => Number(item.amount || 0)));
+
 
   const formatDate = value => {
     const n = Number(value);
@@ -526,52 +599,108 @@ function AdminPanel() {
 
         {view === "dashboard" && (
           <>
-            <section className="admin-command">
+            <section className="admin-command admin-dashboard-hero">
               <div>
-                <span className="admin-header-kicker">CATALOG COMMAND CENTER</span>
-                <h2>Run your ebook business from one place.</h2>
-                <p>Publish books, control availability, review sales activity and keep your digital library organized.</p>
+                <span className="admin-header-kicker">BUSINESS INTELLIGENCE</span>
+                <h2>Your ebook business, measured in real numbers.</h2>
+                <p>Track customers, paid sales, revenue, catalogue performance and account activity from the administrator dashboard.</p>
                 <div className="admin-command-actions">
                   <button className="admin-primary" onClick={() => setView("upload")}><UploadCloud size={17} /> Upload a Book</button>
-                  <button className="admin-secondary" onClick={() => setView("library")}><LibraryIcon size={17} /> Open Library</button>
+                  <button className="admin-secondary" onClick={() => setView("users")}><Users size={17} /> View Users</button>
+                  <button className="admin-secondary" onClick={() => setView("orders")}><Receipt size={17} /> Payment Ledger</button>
                 </div>
               </div>
-              <div className="admin-command-orb">
-                <BookOpen size={58} strokeWidth={1.5} />
+              <div className="admin-command-orb admin-revenue-orb">
+                <TrendingUp size={58} strokeWidth={1.5} />
+                <span>{formatMoney(analyticsOverview.totalBuyAmount)}</span>
+                <small>Total buy amount</small>
               </div>
             </section>
 
-            <section className="admin-stat-grid">
-              <StatCard label="Total books" value={stats.total} icon={<BookOpen size={19} />} meta={stats.active + " active"} />
-              <StatCard label="Paid books" value={stats.paid} icon={<IndianRupee size={19} />} meta={stats.free + " free"} />
-              <StatCard label="Orders" value={orders.length} icon={<ShoppingBag size={19} />} meta="Recorded orders" />
-              <StatCard label="Customers" value={users.length} icon={<Users size={19} />} meta="Registered accounts" />
+            <section className="admin-stat-grid admin-kpi-grid">
+              <StatCard label="Total users" value={analyticsOverview.totalUsers} icon={<Users size={19} />} meta={analyticsOverview.activeUsers + " active · " + analyticsOverview.blockedUsers + " blocked"} />
+              <StatCard label="Total buy amount" value={formatMoney(analyticsOverview.totalBuyAmount)} icon={<IndianRupee size={19} />} meta={analyticsOverview.paidOrders + " successful payments"} />
+              <StatCard label="Total orders" value={analyticsOverview.totalOrders} icon={<ShoppingBag size={19} />} meta={analyticsOverview.openOrders + " unpaid / open"} />
+              <StatCard label="Unique buyers" value={analyticsOverview.uniqueBuyers} icon={<UserCheck size={19} />} meta={analyticsOverview.totalPurchases + " paid purchases"} />
+              <StatCard label="Today" value={formatMoney(analyticsOverview.todayRevenue)} icon={<TrendingUp size={19} />} meta="Revenue today"} />
+              <StatCard label="Last 7 days" value={formatMoney(analyticsOverview.last7DaysRevenue)} icon={<BarChart3 size={19} />} meta="Rolling revenue"} />
+              <StatCard label="Last 30 days" value={formatMoney(analyticsOverview.last30DaysRevenue)} icon={<BarChart3 size={19} />} meta="Rolling revenue"} />
+              <StatCard label="Average order" value={formatMoney(analyticsOverview.averageOrderValue)} icon={<IndianRupee size={19} />} meta={analyticsOverview.paymentSuccessRate.toFixed(1) + "% payment success"} />
             </section>
 
-            <section className="admin-dashboard-grid">
+            <section className="admin-dashboard-grid admin-analysis-grid">
+              <div className="admin-card">
+                <SectionHeading eyebrow="REVENUE TREND" title="Last 7 days" subtitle="Captured Razorpay orders grouped by day." />
+                <div className="admin-revenue-chart">
+                  {analytics.dailyRevenue.map(item => (
+                    <div className="admin-revenue-day" key={item.date}>
+                      <div className="admin-revenue-bar-track"><div style={{ height: Math.max(4, Math.round((Number(item.amount || 0) / dailyMax) * 100)) + "%" }} /></div>
+                      <strong>{formatMoney(item.amount)}</strong>
+                      <span>{item.date}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="admin-card">
+                <SectionHeading eyebrow="STORE HEALTH" title="Catalog & accounts" />
+                <div className="admin-health-grid">
+                  <HealthItem label="Active books" value={analyticsOverview.activeBooks} tone="good" />
+                  <HealthItem label="Draft books" value={Math.max(0, analyticsOverview.totalBooks - analyticsOverview.activeBooks)} tone="neutral" />
+                  <HealthItem label="Paid catalog" value={analyticsOverview.paidBooks} tone="accent" />
+                  <HealthItem label="Free catalog" value={analyticsOverview.freeBooks} tone="neutral" />
+                  <HealthItem label="Active users" value={analyticsOverview.activeUsers} tone="good" />
+                  <HealthItem label="Blocked users" value={analyticsOverview.blockedUsers} tone="neutral" />
+                </div>
+              </div>
+            </section>
+
+            <section className="admin-dashboard-grid admin-analysis-grid">
               <div className="admin-card">
                 <SectionHeading
-                  eyebrow="RECENT CATALOG"
-                  title="Latest books"
-                  action={<button className="admin-text-action" onClick={() => setView("library")}>View all <ChevronRight size={15} /></button>}
+                  eyebrow="TOP PERFORMERS"
+                  title="Best-selling books"
+                  action={<button className="admin-text-action" onClick={() => setView("orders")}>Payment ledger <ChevronRight size={15} /></button>}
                 />
-                <BookMiniList books={books.slice(0, 5)} formatMoney={formatMoney} />
-              </div>
-              <div className="admin-card">
-                <SectionHeading eyebrow="QUICK STATUS" title="Store health" />
-                <div className="admin-health-grid">
-                  <HealthItem label="Published" value={stats.active} tone="good" />
-                  <HealthItem label="Drafts" value={stats.draft} tone="neutral" />
-                  <HealthItem label="Paid catalog" value={stats.paid} tone="accent" />
-                  <HealthItem label="Free catalog" value={stats.free} tone="neutral" />
-                </div>
-                <div className="admin-tip">
-                  <PackageCheck size={18} />
-                  <div>
-                    <strong>Publishing rule</strong>
-                    <span>A book appears in the customer Store only while its status is Active.</span>
+                {analytics.topBooks.length ? (
+                  <div className="admin-ranking-list">
+                    {analytics.topBooks.map((item, index) => (
+                      <div className="admin-ranking-row" key={item.bookId}>
+                        <b>{index + 1}</b>
+                        <div><strong>{item.title}</strong><span>{item.sales} sale{item.sales === 1 ? "" : "s"}</span></div>
+                        <strong>{formatMoney(item.revenue)}</strong>
+                      </div>
+                    ))}
                   </div>
-                </div>
+                ) : <EmptyState icon={<BookOpen size={30} />} title="No paid sales yet" text="Successful purchases will automatically appear here." />}
+              </div>
+
+              <div className="admin-card">
+                <SectionHeading
+                  eyebrow="RECENT PAYMENTS"
+                  title="Latest successful purchases"
+                  action={<button className="admin-text-action" onClick={() => setView("orders")}>View all <ChevronRight size={15} /></button>}
+                />
+                {analytics.recentOrders.length ? (
+                  <div className="admin-recent-payment-list">
+                    {analytics.recentOrders.slice(0, 5).map(order => (
+                      <div className="admin-recent-payment" key={order.id}>
+                        <div className="admin-payment-avatar">{String(order.userName || "C").charAt(0).toUpperCase()}</div>
+                        <div><strong>{order.userName}</strong><span>{order.bookTitle} · {formatDate(order.createdAt)}</span></div>
+                        <b>{formatMoney(order.amount)}</b>
+                      </div>
+                    ))}
+                  </div>
+                ) : <EmptyState icon={<Receipt size={30} />} title="No successful payments" text="Completed payments will be shown here." />}
+              </div>
+            </section>
+
+            <section className="admin-card admin-admin-actions-card">
+              <SectionHeading eyebrow="USER CONTROL" title="Account moderation" subtitle="Block a customer immediately or restore access. Blocking revokes their active sessions." />
+              <div className="admin-control-summary">
+                <div><span>Registered customers</span><strong>{analyticsOverview.totalUsers}</strong></div>
+                <div><span>Active</span><strong>{analyticsOverview.activeUsers}</strong></div>
+                <div><span>Blocked</span><strong>{analyticsOverview.blockedUsers}</strong></div>
+                <button className="admin-primary" onClick={() => setView("users")}><Users size={16} /> Manage Users</button>
               </div>
             </section>
           </>
@@ -736,21 +865,22 @@ function AdminPanel() {
         {view === "orders" && (
           <section className="admin-page-grid">
             <div className="admin-card">
-              <SectionHeading eyebrow="SALES" title={"Orders · " + orders.length} subtitle="Payment records currently stored by the application." />
+              <SectionHeading eyebrow="PAYMENT LEDGER" title={"All payment details · " + orders.length} subtitle={"Successful revenue: " + formatMoney(analyticsOverview.totalBuyAmount) + " · Average paid order: " + formatMoney(analyticsOverview.averageOrderValue)} />
               {orders.length ? (
                 <div className="admin-data-table-wrap">
-                  <table className="admin-data-table">
+                  <table className="admin-data-table admin-payment-table">
                     <thead>
-                      <tr><th>Order</th><th>Customer</th><th>Book</th><th>Amount</th><th>Status</th><th>Created</th></tr>
+                      <tr><th>Order ID</th><th>Payment ID</th><th>Customer</th><th>Book</th><th>Amount</th><th>Status</th><th>Date</th></tr>
                     </thead>
                     <tbody>
                       {orders.map(order => (
                         <tr key={order.id}>
                           <td><strong>{order.razorpayOrderId || order.id}</strong></td>
+                          <td><span>{order.paymentId || "—"}</span></td>
                           <td><span>{order.userEmail || "—"}</span></td>
                           <td><span>{order.bookTitle || order.bookId || "—"}</span></td>
                           <td><strong>{formatMoney(order.amount)}</strong></td>
-                          <td><b className={"admin-table-pill " + (order.status === "PAID" ? "good" : "neutral")}>{order.status || "—"}</b></td>
+                          <td><b className={"admin-table-pill " + (String(order.status || "").toUpperCase() === "PAID" ? "good" : "neutral")}>{order.status || "—"}</b></td>
                           <td><span>{formatDate(order.createdAt)}</span></td>
                         </tr>
                       ))}
@@ -758,7 +888,7 @@ function AdminPanel() {
                   </table>
                 </div>
               ) : (
-                <EmptyState icon={<ShoppingBag size={30} />} title="No orders yet" text="Customer purchases will appear here when the payment flow creates an order." />
+                <EmptyState icon={<ShoppingBag size={30} />} title="No orders yet" text="Customer payment orders will appear here when checkout is started." />
               )}
             </div>
           </section>
@@ -767,28 +897,54 @@ function AdminPanel() {
         {view === "users" && (
           <section className="admin-page-grid">
             <div className="admin-card">
-              <SectionHeading eyebrow="CUSTOMERS" title={"Users · " + users.length} subtitle="Basic account visibility for operational support. Passwords and secret credentials are never shown." />
-              {users.length ? (
+              <SectionHeading eyebrow="CUSTOMER CONTROL" title={"All users · " + users.length} subtitle="Search every customer, inspect purchase totals, and block or restore access." />
+              <div className="admin-user-toolbar">
+                <div className="admin-search-wrap">
+                  <Search size={17} />
+                  <input value={userQuery} onChange={e => setUserQuery(e.target.value)} placeholder="Search name or email…" />
+                </div>
+                <select value={userStatusFilter} onChange={e => setUserStatusFilter(e.target.value)}>
+                  <option value="ALL">All users</option>
+                  <option value="ACTIVE">Active</option>
+                  <option value="BLOCKED">Blocked</option>
+                </select>
+              </div>
+              {filteredUsers.length ? (
                 <div className="admin-data-table-wrap">
-                  <table className="admin-data-table">
+                  <table className="admin-data-table admin-users-table">
                     <thead>
-                      <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th></tr>
+                      <tr><th>User</th><th>Email</th><th>Status</th><th>Purchases</th><th>Total spent</th><th>Last login</th><th>Created</th><th>Control</th></tr>
                     </thead>
                     <tbody>
-                      {users.map(person => (
-                        <tr key={person.id}>
-                          <td><strong>{person.name || "—"}</strong></td>
-                          <td><span>{person.email || "—"}</span></td>
-                          <td><span>{person.role || "user"}</span></td>
-                          <td><b className={"admin-table-pill " + (person.status === "ACTIVE" ? "good" : "neutral")}>{person.status || "—"}</b></td>
-                          <td><span>{formatDate(person.createdAt)}</span></td>
-                        </tr>
-                      ))}
+                      {filteredUsers.map(person => {
+                        const blocked = String(person.status || "").toUpperCase() === "BLOCKED";
+                        return (
+                          <tr key={person.id}>
+                            <td><strong>{person.name || "—"}</strong></td>
+                            <td><span>{person.email || "—"}</span></td>
+                            <td><b className={"admin-table-pill " + (blocked ? "blocked" : "good")}>{blocked ? "BLOCKED" : "ACTIVE"}</b></td>
+                            <td><span>{Number(person.purchases || 0)}</span></td>
+                            <td><strong>{formatMoney(person.spent)}</strong></td>
+                            <td><span>{person.lastLoginAt ? formatDate(person.lastLoginAt) : "Never"}</span></td>
+                            <td><span>{formatDate(person.createdAt)}</span></td>
+                            <td>
+                              {person.role === "admin" ? (
+                                <span className="admin-protected-user"><UserCheck size={14} /> Admin</span>
+                              ) : (
+                                <button className={"admin-user-action " + (blocked ? "restore" : "block")} onClick={() => toggleUserStatus(person)}>
+                                  {blocked ? <UserCheck size={14} /> : <Ban size={14} />}
+                                  {blocked ? "Unblock" : "Block"}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
               ) : (
-                <EmptyState icon={<Users size={30} />} title="No users found" text="Customer accounts will appear here after registration." />
+                <EmptyState icon={<Users size={30} />} title="No users match" text="Change the search or status filter." />
               )}
             </div>
           </section>
