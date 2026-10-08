@@ -123,31 +123,49 @@ const MAX_DESCRIPTION = 5000;
 const PASSWORD_RESET_OTP_MS = 10 * 60 * 1000;
 const PASSWORD_RESET_OTP_ATTEMPTS = 5;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
-const RATE_LIMITS = { login: 10, register: 8, forgot: 5 };
-const rateBuckets = new Map();
+const RATE_LIMITS = { login: 10, register: 8, forgot: 5, "admin-setup": 3 };
+const ADMIN_SETUP_LOCK_MS = 5 * 60 * 1000;
+const ADMIN_SETUP_KEY = String(process.env.ADMIN_SETUP_KEY || "");
 
 function now() {
   return Date.now();
 }
 
-function rateLimit(keyName, limit) {
-  const t = now();
-  const old = rateBuckets.get(keyName);
-  if (!old || t - old.startedAt >= RATE_WINDOW_MS) {
-    rateBuckets.set(keyName, { startedAt: t, count: 1 });
-    return true;
-  }
-  old.count += 1;
-  return old.count <= limit;
+async function rateLimit(keyName, limit) {
+  const db = requireDb();
+  const ref = db.ref("rateLimits/" + hash(keyName));
+  const result = await ref.transaction(current => {
+    const t = now();
+    if (!current || t - Number(current.startedAt || 0) >= RATE_WINDOW_MS) {
+      return { startedAt: t, count: 1 };
+    }
+    return {
+      startedAt: Number(current.startedAt),
+      count: Number(current.count || 0) + 1
+    };
+  });
+  const count = Number(result.snapshot.val()?.count || 0);
+  return count <= limit;
 }
 
 function requestIp(req) {
   return String(req.ip || req.get("x-forwarded-for") || "unknown").split(",")[0].trim().slice(0, 80);
 }
 
-function enforceRateLimit(req, bucket, limit) {
-  if (!rateLimit(bucket + ":" + requestIp(req), limit)) {
-    fail(429, "Too many requests. Please try again later.");
+async function enforceRateLimit(req, bucket, limit) {
+  const allowed = await rateLimit(bucket + ":" + requestIp(req), limit);
+  if (!allowed) fail(429, "Too many requests. Please try again later.");
+}
+
+function requireAdminSetupKey(req) {
+  if (ADMIN_SETUP_KEY.length < 16) {
+    fail(503, "Admin setup is disabled until ADMIN_SETUP_KEY is configured.");
+  }
+  const supplied = String(req.get("x-admin-setup-key") || "");
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(ADMIN_SETUP_KEY);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    fail(403, "Invalid admin setup key.");
   }
 }
 
@@ -445,7 +463,7 @@ router.get("/health", (req, res) => {
 
 router.post("/auth/register", async (req, res) => {
   try {
-    enforceRateLimit(req, "register", RATE_LIMITS.register);
+    await enforceRateLimit(req, "register", RATE_LIMITS.register);
     const { name, email: rawEmail, password } = req.body || {};
     const email = String(rawEmail || "").trim().toLowerCase();
     if (!safeText(name, 100) || !validEmail(email) || !validPassword(password)) {
@@ -517,8 +535,26 @@ router.get("/setup/admin", async (req, res) => {
 });
 
 router.post("/setup/admin", async (req, res) => {
+  let setupLockToken = null;
+  let setupCompleted = false;
   try {
-    enforceRateLimit(req, "admin-setup", 3);
+    requireAdminSetupKey(req);
+    await enforceRateLimit(req, "admin-setup", RATE_LIMITS["admin-setup"]);
+    if (await adminSetupComplete()) {
+      return res.status(410).json({ error: "Admin setup is already completed." });
+    }
+
+    const db = requireDb();
+    setupLockToken = randomToken();
+    const lockRef = db.ref("system/adminSetupLock");
+    const lockTx = await lockRef.transaction(current => {
+      const fresh = current && Number(current.startedAt || 0) > now() - ADMIN_SETUP_LOCK_MS;
+      if (fresh) return;
+      return { token: setupLockToken, startedAt: now() };
+    });
+    if (!lockTx.committed) {
+      return res.status(409).json({ error: "Admin setup is currently being initialized. Try again shortly." });
+    }
     if (await adminSetupComplete()) {
       return res.status(410).json({ error: "Admin setup is already completed." });
     }
@@ -578,18 +614,28 @@ router.post("/setup/admin", async (req, res) => {
     });
 
     await db.ref().update(updates);
+    setupCompleted = true;
     await audit("ADMIN_SETUP_COMPLETED", { userId: adminId, user }, { adminId, email });
     res.status(201).json({ ok: true, message: "Admin account created. The setup page is now permanently locked.", user: { name: user.name, email: user.email, role: user.role } });
   } catch (e) {
     console.error("Admin setup error", e);
     res.status(e.status || 500).json({ error: e.status ? e.message : "Admin setup failed" });
+  } finally {
+    if (setupLockToken && !setupCompleted) {
+      try {
+        const db = requireDb();
+        const snap = await db.ref("system/adminSetupLock").once("value");
+        if (snap.val()?.token === setupLockToken) await db.ref("system/adminSetupLock").remove();
+      } catch {}
+    }
   }
 });
 
 router.post("/auth/login", async (req, res) => {
   try {
-    enforceRateLimit(req, "login", RATE_LIMITS.login);
+    await enforceRateLimit(req, "login", RATE_LIMITS.login);
     const { email: rawEmail, password, otp } = req.body || {};
+    const portal = req.body?.portal === "admin" ? "admin" : "user";
     const login = String(rawEmail || "").trim().toLowerCase();
     let userId;
     let user;
@@ -616,6 +662,12 @@ router.post("/auth/login", async (req, res) => {
     if (!user || user.status !== "ACTIVE" || typeof password !== "string" || !passwordOK(password, user.passwordHash)) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
+    if (portal === "admin" && user.role !== "admin") {
+      return res.status(403).json({ error: "Administrator credentials required." });
+    }
+    if (portal === "user" && user.role === "admin") {
+      return res.status(403).json({ error: "Use the administrator portal to sign in." });
+    }
 
     const firstLogin = user.role === "admin" && user.mustChangePassword === true;
     if (user.role === "admin" && !firstLogin && process.env.ADMIN_TOTP_SECRET) {
@@ -626,7 +678,6 @@ router.post("/auth/login", async (req, res) => {
 
     const session = await createSession(userId);
     setSession(res, session);
-    rateBuckets.delete("login:" + requestIp(req));
     res.json({
       ok: true,
       user: { name: user.name, email: user.email, role: user.role, mustChangePassword: Boolean(user.mustChangePassword) },
@@ -680,7 +731,7 @@ router.post("/auth/change-password", async (req, res) => {
 });
 
 router.post("/auth/forgot-password", async (req, res) => {
-  try { enforceRateLimit(req, "forgot", RATE_LIMITS.forgot); } catch (e) { return res.status(e.status || 429).json({ error: e.message || "Too many requests" }); }
+  try { await enforceRateLimit(req, "forgot", RATE_LIMITS.forgot); } catch (e) { return res.status(e.status || 429).json({ error: e.message || "Too many requests" }); }
   const generic = { ok: true, message: "If an account exists for this email, a verification code has been sent." };
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
