@@ -69,6 +69,8 @@ export const useAuth = () => useContext(AuthContext);
 function Layout({ children }) {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
+  const location = window.location;
+  const isAdminArea = location.pathname.startsWith("/admin");
 
   async function handleLogout() {
     try {
@@ -81,27 +83,31 @@ function Layout({ children }) {
 
   return (
     <>
-      <header>
-        <Link className="brand" to="/">MS Tech EBook</Link>
-        <nav>
-          <Link to="/books">Store</Link>
-          {user ? (
-            <>
-              <Link to="/library">My Library</Link>
-              <button onClick={handleLogout} style={{ opacity: 0.85 }}>Logout ({user.name.split(" ")[0]})</button>
-            </>
-          ) : (
-            <>
-              <Link to="/login">Login</Link>
-              <Link to="/register">Register</Link>
-            </>
-          )}
-        </nav>
-      </header>
+      {!isAdminArea && (
+        <header>
+          <Link className="brand" to="/">MS Tech EBook</Link>
+          <nav>
+            <Link to="/books">Store</Link>
+            {user ? (
+              <>
+                <Link to="/library">My Library</Link>
+                <button onClick={handleLogout} style={{ opacity: 0.85 }}>Logout ({user.name.split(" ")[0]})</button>
+              </>
+            ) : (
+              <>
+                <Link to="/login">Login</Link>
+                <Link to="/register">Register</Link>
+              </>
+            )}
+          </nav>
+        </header>
+      )}
       {children}
-      <footer>
-        <p>© {new Date().getFullYear()} MS Tech EBook. All rights reserved.</p>
-      </footer>
+      {!isAdminArea && (
+        <footer>
+          <p>© {new Date().getFullYear()} MS Tech EBook. All rights reserved.</p>
+        </footer>
+      )}
     </>
   );
 }
