@@ -1175,7 +1175,7 @@ router.get("/admin/users", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
-    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 1000);
     const db = requireDb();
     const [snap, purchasesSnap] = await Promise.all([
       db.ref("users").once("value"),
