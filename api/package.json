@@ -1,0 +1,12 @@
+{
+  "name": "ms-tech-ebook-api",
+  "private": true,
+  "version": "2.0.0",
+  "engines": { "node": "20.x" },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.5.0",
+    "razorpay": "^2.9.6"
+  }
+}
