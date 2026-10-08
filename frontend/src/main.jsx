@@ -748,6 +748,101 @@ function Admin() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [editing, setEditing] = useState(null);
+  const [uploadState, setUploadState] = useState({
+    cover: { status: "idle", progress: 0, message: "Waiting" },
+    pdf: { status: "idle", progress: 0, message: "Waiting" }
+  });
+
+  const updateUploadState = (kind, patch) => {
+    setUploadState(prev => ({
+      ...prev,
+      [kind]: { ...prev[kind], ...patch }
+    }));
+  };
+
+  const waitForUploadedFile = async (storagePath, expectedSize) => {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      try {
+        const result = await api("/api/admin/upload-status?path=" + encodeURIComponent(storagePath));
+        if (result.uploaded && Number(result.size) >= Number(expectedSize)) return result;
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 750));
+    }
+    throw new Error("Storage did not confirm the upload. Please try again.");
+  };
+
+  const uploadDirect = async (f, kind, label) => {
+    updateUploadState(kind, { status: "preparing", progress: 0, message: `Preparing ${label}...` });
+
+    const policy = await api("/api/admin/upload-url", {
+      method: "POST",
+      body: JSON.stringify({ name: f.name, type: f.type, size: f.size })
+    });
+
+    updateUploadState(kind, { status: "uploading", progress: 0, message: `Uploading ${label}...` });
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      let finished = false;
+
+      const confirmUpload = async () => {
+        if (finished) return;
+        try {
+          await waitForUploadedFile(policy.path, f.size);
+          finished = true;
+          updateUploadState(kind, { status: "done", progress: 100, message: `${label} uploaded successfully` });
+          resolve(policy.path);
+        } catch (err) {
+          finished = true;
+          updateUploadState(kind, { status: "error", progress: 0, message: err.message });
+          reject(err);
+        }
+      };
+
+      xhr.open("POST", policy.url, true);
+      xhr.timeout = 30 * 60 * 1000;
+
+      xhr.upload.onprogress = event => {
+        if (event.lengthComputable) {
+          const progress = Math.min(99, Math.round((event.loaded / event.total) * 100));
+          updateUploadState(kind, {
+            status: "uploading",
+            progress,
+            message: `${label}: ${progress}%`
+          });
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          updateUploadState(kind, { progress: 100, message: `${label} transfer complete. Verifying...` });
+        }
+        confirmUpload();
+      };
+
+      xhr.onerror = confirmUpload;
+      xhr.ontimeout = () => {
+        if (!finished) {
+          finished = true;
+          updateUploadState(kind, { status: "error", progress: 0, message: `${label} timed out. Please retry.` });
+          reject(new Error(`${label} upload timed out.`));
+        }
+      };
+      xhr.onabort = () => {
+        if (!finished) {
+          finished = true;
+          updateUploadState(kind, { status: "error", progress: 0, message: `${label} was cancelled.` });
+          reject(new Error(`${label} upload was cancelled.`));
+        }
+      };
+
+      const form = new FormData();
+      Object.entries(policy.fields || {}).forEach(([key, value]) => form.append(key, value));
+      form.append("file", f, f.name);
+      xhr.send(form);
+    });
+  };
+
 
   const loadBooks = () => {
     api("/api/admin/books")
@@ -781,6 +876,12 @@ function Admin() {
     setBusy(true);
     setMsg("");
     setErr("");
+    setUploadState({
+      cover: { status: "idle", progress: 0, message: "Waiting" },
+      pdf: { status: "idle", progress: 0, message: "Waiting" }
+    });
+
+    const uploadedPaths = [];
 
     try {
       if (!cover || !file) throw new Error("Select both a cover image and PDF ebook");
@@ -789,24 +890,13 @@ function Admin() {
         throw new Error("Cover must be JPG, PNG, or WEBP format");
       }
 
-      await api("/api/admin/storage-cors", { method: "POST" }).catch(() => {});
+      const coverPath = await uploadDirect(cover, "cover", "Cover image");
+      uploadedPaths.push(coverPath);
 
-      const uploadDirect = async f => {
-        const u = await api("/api/admin/upload-url", {
-          method: "POST",
-          body: JSON.stringify({ name: f.name, type: f.type, size: f.size })
-        });
-        const putRes = await fetch(u.url, {
-          method: "PUT",
-          headers: { "Content-Type": f.type },
-          body: f
-        });
-        if (!putRes.ok) throw new Error(`Upload failed for ${f.name}`);
-        return u.path;
-      };
+      const storagePath = await uploadDirect(file, "pdf", "PDF document");
+      uploadedPaths.push(storagePath);
 
-      const coverPath = await uploadDirect(cover);
-      const storagePath = await uploadDirect(file);
+      updateUploadState("pdf", { status: "processing", progress: 100, message: "Upload complete. Publishing ebook..." });
 
       await api("/api/admin/books", {
         method: "POST",
@@ -822,9 +912,21 @@ function Admin() {
       setMsg("Ebook successfully published!");
       resetForm();
       e.target.reset();
+      setUploadState({
+        cover: { status: "done", progress: 100, message: "Cover uploaded" },
+        pdf: { status: "done", progress: 100, message: "PDF uploaded and published" }
+      });
       loadBooks();
     } catch (x) {
-      setErr(x.message);
+      for (const storagePath of uploadedPaths) {
+        try {
+          await api("/api/admin/upload-file", {
+            method: "DELETE",
+            body: JSON.stringify({ path: storagePath })
+          });
+        } catch {}
+      }
+      setErr(x.message || "Upload failed");
     } finally {
       setBusy(false);
     }
@@ -1013,8 +1115,33 @@ function Admin() {
               </div>
             )}
 
+            <div className="upload-status-panel" aria-live="polite">
+              <div className="upload-status-title">
+                <strong>Upload status</strong>
+                <span>{busy ? "Do not close this page" : "Ready"}</span>
+              </div>
+              {[
+                ["cover", "Cover image"],
+                ["pdf", "PDF document"]
+              ].map(([kind, label]) => {
+                const item = uploadState[kind];
+                return (
+                  <div className="upload-status-item" key={kind}>
+                    <div className="upload-status-row">
+                      <span>{label}</span>
+                      <b>{item.status === "done" ? "✓" : item.status === "error" ? "Failed" : item.progress > 0 ? `${item.progress}%` : item.message}</b>
+                    </div>
+                    <div className="upload-progress">
+                      <div style={{ width: `${item.progress}%` }} />
+                    </div>
+                    <small>{item.message}</small>
+                  </div>
+                );
+              })}
+            </div>
+
             {err && <p className="error">{err}</p>}
-            {msg && <p className="success">{msg}</p>}
+            {msg && <p className="success">{msg}</p>
 
             <button className="admin-primary" disabled={busy}>
               {busy ? "Processing..." : editing ? "Save Changes" : "Upload & Publish Ebook"}
