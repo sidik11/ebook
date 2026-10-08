@@ -376,7 +376,7 @@ app.post("/api/setup/admin", async (req, res) => {
     console.error("Admin setup error", e);
     res.status(e.status || 500).json({ error: e.status ? e.message : "Admin setup failed" });
   }
-}
+});
 
 app.post("/api/auth/login", async (req, res) => {
   try {
