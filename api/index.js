@@ -90,7 +90,7 @@ function safeText(value, max) {
   return String(value ?? "").trim().slice(0, max);
 }
 function key(value) {
-  return String(value).replace(/[.#$\\[\\]/]/g, "_").slice(0, 768);
+  return String(value).replace(/[.#$\\[\\]]/g, "_").slice(0, 768);
 }
 
 async function get(path) {
