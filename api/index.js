@@ -328,10 +328,13 @@ app.post("/api/setup/admin", async (req, res) => {
     const existingTarget = await get(targetPath);
     if (existingTarget && existingTarget.role !== "admin") return res.status(409).json({ error: "That admin ID is already used by another account." });
 
-    const legacy = await get("users/admin");
-    if (legacy && legacy.role !== "admin" && adminId === "admin") return res.status(409).json({ error: "The admin ID is already used by another account." });
+    const usersSnap = await db.ref("users").once("value");
+    const existingAdmins = [];
+    usersSnap.forEach(child => {
+      const value = child.val();
+      if (value?.role === "admin") existingAdmins.push({ id: child.key, user: value });
+    });
 
-    const oldAdminEmail = legacy?.role === "admin" ? legacy.email : null;
     const user = {
       name: "Administrator",
       email,
@@ -344,14 +347,24 @@ app.post("/api/setup/admin", async (req, res) => {
     };
 
     const updates = {};
+    for (const item of existingAdmins) {
+      if (item.id !== adminId) {
+        updates["users/" + item.id] = null;
+        if (validEmail(item.user?.email)) updates["adminEmailIndex/" + hash(item.user.email)] = null;
+      }
+    }
     updates[targetPath] = user;
     updates["adminEmailIndex/" + hash(email)] = adminId;
     updates["system/adminSetup"] = { completedAt: now(), userId: adminId, email };
 
-    if (legacy?.role === "admin" && adminId !== "admin") {
-      updates["users/admin"] = null;
-      if (oldAdminEmail && validEmail(oldAdminEmail)) updates["adminEmailIndex/" + hash(oldAdminEmail)] = null;
-    }
+    const sessions = await db.ref("sessions").once("value");
+    sessions.forEach(child => {
+      const session = child.val();
+      if (session?.userId && existingAdmins.some(item => item.id === session.userId) && session.userId !== adminId) {
+        updates["sessions/" + child.key + "/revoked"] = true;
+        updates["sessions/" + child.key + "/revokedAt"] = now();
+      }
+    });
 
     await db.ref().update(updates);
     await audit("ADMIN_SETUP_COMPLETED", { userId: adminId, user }, { adminId, email });
