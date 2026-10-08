@@ -311,7 +311,8 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       console.error("Password reset email failed", mailError);
       return res.status(500).json({ error: "Password reset email could not be sent" });
     }
-    res.json({ ...generic, resetId });
+    res.cookie("ms_reset", resetId, { httpOnly: true, secure: true, sameSite: "lax", path: "/api/auth", maxAge: PASSWORD_RESET_OTP_MS });
+    res.json(generic);
   } catch (e) {
     console.error("Forgot password error", e);
     res.status(500).json({ error: "Password reset request failed" });
@@ -320,7 +321,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 
 app.post("/api/auth/reset-password", async (req, res) => {
   try {
-    const resetId = safeText(req.body?.resetId, 100);
+    const resetId = safeText(req.cookies.ms_reset, 100);
     const otp = safeText(req.body?.otp, 6);
     const password = req.body?.password;
     if (!resetId || !/^\d{6}$/.test(otp) || !validPassword(password)) return res.status(400).json({ error: "Invalid reset details" });
@@ -346,6 +347,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
       [resetPath + "/consumed"]: true,
       [resetPath + "/consumedAt"]: now()
     });
+    res.clearCookie("ms_reset", { path: "/api/auth" });
 
     const sessions = await db.ref("sessions").orderByChild("userId").equalTo(reset.userId).once("value");
     const sessionUpdates = {};
