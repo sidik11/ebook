@@ -764,7 +764,7 @@ function totp(secret, counter) {
   return String(code % 1000000).padStart(6, "0");
 }
 function verifyTotp(secret, code) {
-  if (!/^\\d{6}$/.test(code)) return false;
+  if (!/^\d{6}$/.test(code)) return false;
   const step = Math.floor(Date.now() / 1000 / 30);
   for (let delta = -1; delta <= 1; delta++) if (totp(secret, step + delta) === code) return true;
   return false;
