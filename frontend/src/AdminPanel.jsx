@@ -365,12 +365,12 @@ function AdminPanel() {
       const nextStatus = book.status === "ACTIVE" ? "DRAFT" : "ACTIVE";
       await api("/api/admin/books/" + book.id, {
         method: "PATCH",
-        body: {
+        body: JSON.stringify({
           ...book,
           status: nextStatus,
           type: book.type || "PAID",
           price: book.type === "FREE" ? 0 : Number(book.price || 0),
-        },
+        }),
       });
       await loadBooks();
       showNotice("success", nextStatus === "ACTIVE" ? "Book published to the storefront." : "Book moved to draft.");
