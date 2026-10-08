@@ -87,6 +87,18 @@ Never commit real secrets.
    `https://YOUR_DOMAIN/api/webhooks/razorpay`
 7. Test registration, login, admin TOTP, upload, free reading, paid checkout, webhook reconciliation, library access, and logout.
 
+## Administrator portal
+
+Admin login is available at:
+
+- `/admin` — canonical administrator login
+- `/admin/admin` — administrator login alias
+- `/admin/login` — administrator login alias
+
+After successful administrator authentication, `/admin` opens the dashboard. Customer accounts are blocked from the administrator portal.
+
+One-time administrator initialization is at `/setadmin` and requires the private `ADMIN_SETUP_KEY`. Once initialization is completed, the setup endpoint is permanently locked.
+
 ## Admin ebook management
 
 The admin panel supports:
