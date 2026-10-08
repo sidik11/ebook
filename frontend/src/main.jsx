@@ -194,9 +194,6 @@ function Books() {
 function AuthForm({ register = false }) {
   const { setUser } = useAuth();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useStatfunction AuthForm({ register = false }) {
-  const { setUser } = useAuth();
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
@@ -316,13 +313,18 @@ function AdminLogin() {
         )}
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>{busy ? "Signing in..." : "Administrator Login"}</button>
-        <p style={{ textAlign: "center", fontSize: "13px", marginTop: "4px" }}><Link to="/books">Return to Store</Link></p>
+        <p style={{ textAlign: "center", fontSize: "13px", marginTop: "4px" }}>
+          <Link to="/books">Return to Store</Link>
+        </p>
       </form>
     </main>
   );
 }
 
-assword] = useState("");
+function ChangePassword() {
+  const { user, setUser } = useAuth();
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -332,11 +334,8 @@ assword] = useState("");
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    if (newPassword !== confirmPassword) {
-      return setError("Passwords do not match");
-    }
+    if (newPassword !== confirmPassword) return setError("Passwords do not match");
     setBusy(true);
-
     try {
       await api("/api/auth/change-password", {
         method: "POST",
@@ -356,40 +355,12 @@ assword] = useState("");
     <main className="auth">
       <form onSubmit={handleSubmit}>
         <h1>{user?.mustChangePassword ? "Set Up New Password" : "Change Password"}</h1>
-        {user?.mustChangePassword && (
-          <p className="success">First-time login detected. Please create a new secure password.</p>
-        )}
-        <input
-          type="password"
-          placeholder="Current Password"
-          value={currentPassword}
-          onChange={e => setCurrentPassword(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="New Password (10+ chars, upper, lower, number)"
-          minLength={10}
-          value={newPassword}
-          onChange={e => setNewPassword(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Confirm New Password"
-          minLength={10}
-          value={confirmPassword}
-          onChange={e => setConfirmPassword(e.target.value)}
-          required
-        />
+        {user?.mustChangePassword && <p className="success">First-time login detected. Please create a new secure password.</p>}
+        <input type="password" placeholder="Current Password" autoComplete="current-password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} required />
+        <input type="password" placeholder="New Password (10+ chars, upper, lower, number)" autoComplete="new-password" minLength={10} value={newPassword} onChange={e => setNewPassword(e.target.value)} required />
+        <input type="password" placeholder="Confirm New Password" autoComplete="new-password" minLength={10} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required />
         {error && <p className="error">{error}</p>}
-        {done ? (
-          <p className="success">Password updated! Redirecting...</p>
-        ) : (
-          <button className="primary" disabled={busy}>
-            {busy ? "Updating..." : "Update Password"}
-          </button>
-        )}
+        {done ? <p className="success">Password updated! Redirecting...</p> : <button className="primary" disabled={busy}>{busy ? "Updating..." : "Update Password"}</button>}
       </form>
     </main>
   );
@@ -411,7 +382,7 @@ function SetAdmin() {
     api("/api/setup/admin")
       .then(() => setLocked(false))
       .catch(e => {
-        if (e.message && e.message.includes("already completed")) setLocked(true);
+        if (e.message?.includes("already completed")) setLocked(true);
         else setError(e.message);
       });
   }, []);
@@ -421,7 +392,6 @@ function SetAdmin() {
     setError("");
     if (password !== confirm) return setError("Passwords do not match");
     setBusy(true);
-
     try {
       await api("/api/setup/admin", {
         method: "POST",
@@ -429,9 +399,9 @@ function SetAdmin() {
         body: JSON.stringify({ adminId, email, password })
       });
       setDone(true);
-      setTimeout(() => navigate("/login"), 1500);
+      setTimeout(() => navigate("/admin/admin"), 1500);
     } catch (err) {
-      if (err.message && err.message.includes("already completed")) setLocked(true);
+      if (err.message?.includes("already completed")) setLocked(true);
       setError(err.message);
     } finally {
       setBusy(false);
@@ -440,25 +410,21 @@ function SetAdmin() {
 
   if (locked) {
     return (
-      <main className="auth">
-        <form>
-          <h1>Setup Completed</h1>
-          <p className="success">The administrator account has already been initialized. This endpoint is permanently disabled.</p>
-          <button type="button" className="primary" onClick={() => navigate("/login")}>Go to Login</button>
-        </form>
-      </main>
+      <main className="auth"><form>
+        <h1>Setup Completed</h1>
+        <p className="success">The administrator account has already been initialized. Setup is permanently disabled.</p>
+        <button type="button" className="primary" onClick={() => navigate("/admin/admin")}>Go to Administrator Portal</button>
+      </form></main>
     );
   }
 
   if (done) {
     return (
-      <main className="auth">
-        <form>
-          <h1>Admin Account Created</h1>
-          <p className="success">Administrator account successfully created! Setup is now locked.</p>
-          <p>Redirecting to login...</p>
-        </form>
-      </main>
+      <main className="auth"><form>
+        <h1>Admin Account Created</h1>
+        <p className="success">Administrator account successfully created. Setup is now locked.</p>
+        <p>Redirecting to administrator portal...</p>
+      </form></main>
     );
   }
 
@@ -467,52 +433,15 @@ function SetAdmin() {
       <form onSubmit={submit}>
         <h1>Initialize Admin</h1>
         <p style={{ color: "#a0aec0", fontSize: "14px" }}>
-          Configure the primary administrator account. Once set, this setup endpoint is permanently locked.
+          This one-time setup requires the private ADMIN_SETUP_KEY configured on the server.
         </p>
-        <input
-          type="password"
-          placeholder="Admin Setup Key"
-          value={setupKey}
-          onChange={e => setSetupKey(e.target.value)}
-          minLength={16}
-          required
-        />
-        <input
-          placeholder="Admin User ID (e.g. admin)"
-          value={adminId}
-          onChange={e => setAdminId(e.target.value)}
-          pattern="[A-Za-z0-9_-]{3,64}"
-          minLength={3}
-          maxLength={64}
-          required
-        />
-        <input
-          type="email"
-          placeholder="Admin Email Address"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Admin Password (10+ chars, upper, lower, number)"
-          minLength={10}
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Confirm Admin Password"
-          minLength={10}
-          value={confirm}
-          onChange={e => setConfirm(e.target.value)}
-          required
-        />
+        <input type="password" placeholder="Admin Setup Key" value={setupKey} onChange={e => setSetupKey(e.target.value)} minLength={16} required />
+        <input placeholder="Admin User ID (e.g. admin)" value={adminId} onChange={e => setAdminId(e.target.value)} pattern="[A-Za-z0-9_-]{3,64}" minLength={3} maxLength={64} required />
+        <input type="email" placeholder="Admin Email Address" value={email} onChange={e => setEmail(e.target.value)} required />
+        <input type="password" placeholder="Admin Password (10+ chars, upper, lower, number)" minLength={10} autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required />
+        <input type="password" placeholder="Confirm Admin Password" minLength={10} autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} required />
         {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy}>
-          {busy ? "Configuring..." : "Create Admin Account"}
-        </button>
+        <button className="primary" disabled={busy}>{busy ? "Configuring..." : "Create Admin Account"}</button>
       </form>
     </main>
   );
