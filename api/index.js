@@ -600,13 +600,16 @@ app.post("/api/admin/upload-url", async (req, res) => {
     if (!auth || !requireCsrf(req, res, auth)) return;
     const { name, type, size } = req.body || {};
     const allowed = {
-      "application/pdf": { folder: "ebooks", max: 50 * 1024 * 1024, ext: "pdf" },
-      "image/jpeg": { folder: "covers", max: 5 * 1024 * 1024, ext: "jpg" },
-      "image/png": { folder: "covers", max: 5 * 1024 * 1024, ext: "png" },
-      "image/webp": { folder: "covers", max: 5 * 1024 * 1024, ext: "webp" }
+      "application/pdf": { folder: "ebooks", max: 100 * 1024 * 1024, ext: "pdf" },
+      "image/jpeg": { folder: "covers", max: 10 * 1024 * 1024, ext: "jpg" },
+      "image/png": { folder: "covers", max: 10 * 1024 * 1024, ext: "png" },
+      "image/webp": { folder: "covers", max: 10 * 1024 * 1024, ext: "webp" }
     };
     const spec = allowed[type];
-    if (!spec || !name || !Number.isFinite(Number(size)) || Number(size) <= 0 || Number(size) > spec.max) return res.status(400).json({ error: "Invalid file or file size" });
+    if (!name) return res.status(400).json({ error: "File name is required" });
+    if (!spec) return res.status(400).json({ error: "Unsupported file type. Use PDF, JPG, PNG, or WEBP." });
+    if (!Number.isFinite(Number(size)) || Number(size) <= 0) return res.status(400).json({ error: "Invalid file size" });
+    if (Number(size) > spec.max) return res.status(400).json({ error: `File is too large. Maximum allowed for this file type is ${Math.round(spec.max / (1024 * 1024))} MB.` });
     const path = "private/" + spec.folder + "/" + crypto.randomUUID() + "." + spec.ext;
     const [url] = await bucket.file(path).getSignedUrl({
       version: "v4", action: "write", expires: now() + 15 * 60 * 1000,
