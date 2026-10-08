@@ -915,7 +915,6 @@ router.post("/admin/upload-url", async (req, res) => {
       expires: new Date(now() + 15 * 60 * 1000),
       fields: { "Content-Type": type },
       conditions: [
-        ["eq", "$Content-Type", type],
         ["content-length-range", 1, spec.max]
       ]
     });
