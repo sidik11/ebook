@@ -1,6 +1,6 @@
 # MS Tech EBook
 
-Production-oriented ebook platform using one Vercel deployment, one Firebase project, and Firebase Realtime Database.
+Production-oriented ebook platform using one Vercel deployment, Firebase Realtime Database for application data, and Cloudflare R2 for private ebook binaries.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ Production-oriented ebook platform using one Vercel deployment, one Firebase pro
 - **Backend:** Node.js + Express in `api/index.js`
 - **Hosting:** one Vercel project
 - **Database:** Firebase Realtime Database (RTDB)
-- **File storage:** private Firebase Storage for PDF/cover binaries only
+- **File storage:** private Cloudflare R2 for PDF/cover binaries; Firebase Storage remains optional for legacy books
 - **Authentication:** custom email/password authentication; Firebase Auth is not used
 - **Payments:** Razorpay
 - **Abuse protection:** Firebase RTDB transaction-backed per-IP rate limiting for authentication endpoints, so limits are shared across Vercel function instances
@@ -58,6 +58,11 @@ FIREBASE_PRIVATE_KEY=
 FIREBASE_DATABASE_URL=
 FIREBASE_STORAGE_BUCKET=
 
+BUCKET=
+R2_ACCESS_KEY=
+R2_SECRET_KEY=
+R2_ENDPOINT=
+
 RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
 RAZORPAY_WEBHOOK_SECRET=
@@ -79,7 +84,7 @@ Never commit real secrets.
 
 1. Import the repository into Vercel.
 2. Keep the repository root as the Vercel project root; the repository's Vercel configuration routes `/api/*` to `api/index.js` and the Vite build to `frontend/dist`.
-3. Add the environment variables above. `ADMIN_SETUP_KEY` must be a strong random secret of at least 16 characters.
+3. Add the environment variables above. For R2, `BUCKET` is the R2 bucket name and `R2_ENDPOINT` is the S3-compatible endpoint from Cloudflare. `R2_ACCESS_KEY` and `R2_SECRET_KEY` must be server-side secrets and should be scoped to Object Read & Write for this bucket. `ADMIN_SETUP_KEY` must be a strong random secret of at least 16 characters.
 4. Deploy.
 5. Deploy RTDB rules with Firebase CLI when needed:
    `firebase deploy --only database`
@@ -112,7 +117,7 @@ The admin panel supports:
 - deletion
 - audit logging
 
-PDFs and covers remain private in Firebase Storage. Browser uploads use short-lived signed multipart POST policies, so administrator uploads do not depend on bucket CORS configuration or a browser PUT preflight. The server verifies each uploaded object before creating the ebook metadata record. RTDB stores metadata and authorization/payment state.
+New PDFs and covers are stored privately in Cloudflare R2. The Vercel API issues short-lived R2 presigned PUT URLs; the browser uploads directly to R2 with live progress, and the server verifies the final object size/type before creating the ebook metadata record. RTDB stores metadata, users, purchases, orders, and payment state. Firebase Storage is only retained as an optional legacy backend for books created before the R2 migration.
 
 ## Production requirements
 
@@ -139,3 +144,23 @@ Set these Vercel environment variables:
 - `GMAIL_SENDER_EMAIL`
 
 Enable the Gmail API in Google Cloud and authorize the Gmail account that will send the messages. The implementation uses the Gmail API `messages.send` operation with OAuth 2.0 credentials. Google documents that server-side Gmail API requests require OAuth 2.0 authorization and that Gmail messages can be sent with `messages.send`. 
+
+## Cloudflare R2 CORS
+
+Because administrator browsers upload directly to a private R2 bucket using presigned PUT URLs, the R2 bucket must allow the deployed site origin. Cloudflare requires a bucket CORS rule for browser requests to presigned URLs.
+
+Use this policy in **R2 → your bucket → Settings → CORS Policy** and replace the origin with your exact Vercel/custom-domain origin:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://ebook-one-jade.vercel.app"],
+    "AllowedMethods": ["PUT", "GET", "HEAD"],
+    "AllowedHeaders": ["Content-Type"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Do not make the R2 bucket public. The application uses short-lived presigned URLs for uploads and reading.
