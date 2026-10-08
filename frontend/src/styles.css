@@ -65,8 +65,8 @@ footer{background:rgba(8,11,20,.7)}
 @media(max-width:700px){.readerbar{height:auto;min-height:56px;padding:9px 10px;gap:8px;flex-wrap:wrap}.readerbar>span{font-size:12px}.reader-controls{gap:4px;flex-wrap:wrap}.reader-controls button,.reader-controls a{height:30px;min-width:30px;padding:0 7px}.canvas-reader{padding:14px 7px 35px}}
 
 /* Administrator control center */
-.admin-workspace{min-height:calc(100vh - 72px);display:grid;grid-template-columns:250px minmax(0,1fr);background:radial-gradient(circle at 75% 0%,rgba(124,92,255,.08),transparent 28%),#080b14}
-.admin-sidebar{position:sticky;top:72px;height:calc(100vh - 72px);display:flex;flex-direction:column;padding:22px 15px;border-right:1px solid #20283b;background:rgba(8,12,21,.94);backdrop-filter:blur(22px);z-index:30}
+.admin-workspace{min-height:100vh;display:grid;grid-template-columns:250px minmax(0,1fr);background:radial-gradient(circle at 75% 0%,rgba(124,92,255,.08),transparent 28%),#080b14}
+.admin-sidebar{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:22px 15px;border-right:1px solid #20283b;background:rgba(8,12,21,.94);backdrop-filter:blur(22px);z-index:30}
 .admin-sidebar-brand{display:flex;align-items:center;gap:11px;padding:4px 7px 23px;border-bottom:1px solid #20283b}
 .admin-brand-mark{width:37px;height:37px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(135deg,#7657ff,#b75cff);font-size:11px;font-weight:950;color:#fff;box-shadow:0 10px 26px rgba(124,92,255,.24)}
 .admin-sidebar-brand strong,.admin-sidebar-brand span{display:block}
@@ -249,9 +249,9 @@ footer{background:rgba(8,11,20,.7)}
 }
 @media(max-width:760px){
   .admin-workspace{display:block}
-  .admin-sidebar{position:fixed;left:0;top:72px;width:260px;height:calc(100vh - 72px);transform:translateX(-102%);transition:transform .22s ease;box-shadow:20px 0 70px rgba(0,0,0,.4)}
+  .admin-sidebar{position:fixed;left:0;top:0;width:260px;height:100vh;transform:translateX(-102%);transition:transform .22s ease;box-shadow:20px 0 70px rgba(0,0,0,.4)}
   .admin-sidebar.open{transform:translateX(0)}
-  .admin-mobile-overlay{position:fixed;inset:72px 0 0;z-index:25;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s}
+  .admin-mobile-overlay{position:fixed;inset:0;z-index:25;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s}
   .admin-mobile-overlay[data-open="true"]{opacity:1;pointer-events:auto}
   .admin-menu-trigger,.admin-mobile-close{display:grid}
   .admin-main{padding:0 12px 45px}
