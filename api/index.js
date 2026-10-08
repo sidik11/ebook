@@ -387,15 +387,24 @@ app.post("/api/auth/login", async (req, res) => {
     let user;
 
     if (login === "admin") {
+      // Backward compatibility for the old fixed admin account.
       const legacy = await get("users/admin");
       if (!legacy || legacy.role !== "admin") return res.status(401).json({ error: "Invalid email or password" });
       userId = "admin";
       user = legacy;
-    } else {
-      if (!validEmail(login) || typeof password !== "string") return res.status(400).json({ error: "Invalid credentials" });
+    } else if (validEmail(login)) {
       const found = await findUserByEmail(login);
       userId = found?.userId;
       user = found?.user;
+    } else if (validAdminId(login)) {
+      // One-time setup creates the real admin record under the chosen admin ID.
+      const candidate = await get("users/" + login);
+      if (candidate?.role === "admin") {
+        userId = login;
+        user = candidate;
+      }
+    } else {
+      return res.status(400).json({ error: "Invalid credentials" });
     }
 
     if (!user || user.status !== "ACTIVE" || typeof password !== "string" || !passwordOK(password, user.passwordHash)) {
