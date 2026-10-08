@@ -109,3 +109,16 @@ Before accepting real customer payments:
 - rotate any credentials that were ever exposed
 - keep RTDB and Storage rules closed
 - back up RTDB before migrations
+
+
+## Password reset by Gmail OTP
+
+Forgot-password uses the Gmail API from the Vercel server. Google OAuth credentials stay server-side; the browser never receives the Gmail refresh token. The API sends a one-time 6-digit OTP that expires after 10 minutes, allows five verification attempts, and revokes all existing sessions after a successful password change.
+
+Set these Vercel environment variables:
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `GMAIL_SENDER_EMAIL`
+
+Enable the Gmail API in Google Cloud and authorize the Gmail account that will send the messages. The implementation uses the Gmail API `messages.send` operation with OAuth 2.0 credentials. Google documents that server-side Gmail API requests require OAuth 2.0 authorization and that Gmail messages can be sent with `messages.send`. 
