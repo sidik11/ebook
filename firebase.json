@@ -1,7 +1,6 @@
 {
   "database": {
-    "rules": "rtdb.rules",
-    "databaseURL": "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com"
+    "rules": "rtdb.rules"
   },
   "storage": {
     "rules": "storage.rules"
