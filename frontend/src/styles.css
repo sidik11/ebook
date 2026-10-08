@@ -51,3 +51,15 @@ nav button{border:1px solid #2c3650!important;border-radius:10px!important;paddi
 .protected-reader-active input,.protected-reader-active textarea{user-select:text;-webkit-user-select:text}
 footer{background:rgba(8,11,20,.7)}
 @media(max-width:700px){.hero{padding-top:55px}.hero h1{font-size:42px}.auth form{padding:25px}.readerbar{height:52px}}
+
+.reader-controls{display:flex;align-items:center;gap:7px}
+.reader-controls button,.reader-controls a{height:32px;min-width:32px;padding:0 9px;border:1px solid #303a52;border-radius:8px;background:#121a2a;color:#e8ebf5;font-weight:800;display:inline-flex;align-items:center;justify-content:center}
+.reader-controls button:disabled{opacity:.35;cursor:not-allowed}
+.reader-controls span{font-size:12px;color:#9da8bd;min-width:42px;text-align:center}
+.canvas-reader{flex:1;overflow:auto;background:#090d15;padding:28px 18px 60px;display:flex;justify-content:center;overscroll-behavior:contain}
+.canvas-page{background:#fff;box-shadow:0 20px 60px rgba(0,0,0,.45);line-height:0;max-width:100%;user-select:none;-webkit-user-select:none}
+.canvas-page canvas{display:block;max-width:100%;height:auto;user-select:none;-webkit-user-select:none}
+.reader-loading{display:flex;align-items:center;gap:10px;color:#aeb8cb;font-weight:700}
+.reader-spinner{width:20px;height:20px;border:2px solid #2c3650;border-top-color:#9b86ff;border-radius:50%;animation:reader-spin .75s linear infinite}
+@keyframes reader-spin{to{transform:rotate(360deg)}}
+@media(max-width:700px){.readerbar{height:auto;min-height:56px;padding:9px 10px;gap:8px;flex-wrap:wrap}.readerbar>span{font-size:12px}.reader-controls{gap:4px;flex-wrap:wrap}.reader-controls button,.reader-controls a{height:30px;min-width:30px;padding:0 7px}.canvas-reader{padding:14px 7px 35px}}
