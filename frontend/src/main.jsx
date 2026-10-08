@@ -35,6 +35,7 @@ export async function api(path, options = {}) {
   const res = await fetch(path, {
     ...options,
     credentials: "include",
+    cache: method === "GET" ? "no-store" : options.cache,
     headers
   });
 
