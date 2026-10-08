@@ -867,6 +867,7 @@ router.get("/auth/me", async (req, res) => {
 
 router.get("/books", async (req, res) => {
   try {
+    res.set("Cache-Control", "no-store, max-age=0");
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
     const books = await listBooks(true, limit);
     const publicBooks = await Promise.all(books.map(b => publicBook(b.id, b.data)));
@@ -878,9 +879,11 @@ router.get("/books", async (req, res) => {
 
 router.get("/books/:id", async (req, res) => {
   try {
-    const data = await get("books/" + key(req.params.id));
-    if (!data || data.status !== "ACTIVE") return res.status(404).json({ error: "Book not found" });
-    res.json({ book: await publicBook(key(req.params.id), data) });
+    res.set("Cache-Control", "no-store, max-age=0");
+    const id = key(req.params.id);
+    const data = await get("books/" + id);
+    if (!data || String(data.status || "").toUpperCase() !== "ACTIVE") return res.status(404).json({ error: "Book not found" });
+    res.json({ book: await publicBook(id, data) });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load ebook" });
   }
@@ -1000,10 +1003,74 @@ router.get("/admin/books", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
     if (!auth) return;
-    const books = await listBooks(false, 100);
+    res.set("Cache-Control", "no-store, max-age=0");
+    const books = await listBooks(false, 200);
     res.json({ books: books.map(b => ({ id: b.id, ...b.data })) });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load admin books" });
+  }
+});
+
+router.get("/admin/users", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    res.set("Cache-Control", "no-store, max-age=0");
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const snap = await requireDb().ref("users").once("value");
+    const users = [];
+    snap.forEach(child => {
+      const data = child.val() || {};
+      users.push({
+        id: child.key,
+        name: safeText(data.name, 120),
+        email: validEmail(data.email) ? data.email : "",
+        role: data.role === "admin" ? "admin" : "user",
+        status: safeText(data.status, 30) || "ACTIVE",
+        createdAt: Number(data.createdAt || 0),
+        updatedAt: Number(data.updatedAt || 0),
+      });
+    });
+    users.sort((a, b) => b.createdAt - a.createdAt);
+    res.json({ users: users.slice(0, limit) });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || "Could not load users" });
+  }
+});
+
+router.get("/admin/orders", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    res.set("Cache-Control", "no-store, max-age=0");
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const snap = await requireDb().ref("orders").once("value");
+    const rawOrders = [];
+    snap.forEach(child => rawOrders.push({ id: child.key, ...(child.val() || {}) }));
+    rawOrders.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    const orders = [];
+    for (const order of rawOrders.slice(0, limit)) {
+      const [customer, book] = await Promise.all([
+        order.userId ? get("users/" + key(order.userId)) : null,
+        order.bookId ? get("books/" + key(order.bookId)) : null,
+      ]);
+      orders.push({
+        id: order.id,
+        userId: order.userId || null,
+        userEmail: validEmail(customer?.email) ? customer.email : "",
+        bookId: order.bookId || null,
+        bookTitle: safeText(book?.title, MAX_BOOK_TITLE),
+        amount: Number(order.amount || 0),
+        amountPaise: Number(order.amountPaise || 0),
+        status: safeText(order.status, 30),
+        razorpayOrderId: safeText(order.razorpayOrderId || order.id, 100),
+        createdAt: Number(order.createdAt || 0),
+        updatedAt: Number(order.updatedAt || 0),
+      });
+    }
+    res.json({ orders });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || "Could not load orders" });
   }
 });
 
