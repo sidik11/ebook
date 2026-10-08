@@ -1,6 +1,18 @@
 {
   "rules": {
     ".read": false,
-    ".write": false
+    ".write": false,
+    "books": {
+      ".indexOn": ["status", "createdAt"]
+    },
+    "purchases": {
+      ".indexOn": ["userId", "status"]
+    },
+    "orders": {
+      ".indexOn": ["userId", "bookId", "status", "createdAt"]
+    },
+    "sessions": {
+      ".indexOn": ["userId", "expiresAt", "revoked"]
+    }
   }
 }
