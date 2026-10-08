@@ -25,7 +25,7 @@ const bucket = admin.storage().bucket();
 const app = express();
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
-app.use(express.json({ limit: "512kb" }));
+app.use(express.json({ limit: "512kb", verify: (req, res, buf) => { req.rawBody = Buffer.from(buf); } }));
 app.use(cookieParser());
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
