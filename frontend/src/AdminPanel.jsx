@@ -315,15 +315,17 @@ function AdminPanel() {
     } catch (err) {
       if (published) {
         showNotice("error", "The ebook was published, but the admin library refresh failed. Refresh the admin workspace; the stored files were kept.");
-      } else for (const storagePath of uploadedPaths) {
-        try {
-          await api("/api/admin/upload-file", {
-            method: "DELETE",
-            body: JSON.stringify({ path: storagePath }),
-          });
-        } catch {}
+      } else {
+        for (const storagePath of uploadedPaths) {
+          try {
+            await api("/api/admin/upload-file", {
+              method: "DELETE",
+              body: JSON.stringify({ path: storagePath }),
+            });
+          } catch {}
+        }
+        showNotice("error", err.message || "Upload failed.");
       }
-      showNotice("error", err.message || "Upload failed.");
     } finally {
       setUploadBusy(false);
     }
