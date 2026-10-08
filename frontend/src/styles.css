@@ -278,3 +278,19 @@ footer{background:rgba(8,11,20,.7)}
   .admin-command-actions .admin-secondary,.admin-command-actions .admin-primary{flex:1}
   .admin-header-actions .admin-primary{font-size:10px}
 }
+
+
+/* Admin workspace navigation polish */
+.admin-nav-arrow{margin-left:auto;color:#5e6a82;font-size:12px;font-weight:950}
+.admin-library-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.admin-secondary.compact{display:inline-flex;align-items:center;justify-content:center;padding:10px 12px;border:1px solid #29344b;border-radius:10px}
+.admin-library-quickbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:14px;padding:12px 14px;border:1px solid #272f45;border-radius:12px;background:linear-gradient(100deg,#0e1523,#0b111c)}
+.admin-library-quickbar strong,.admin-library-quickbar span{display:block}
+.admin-library-quickbar strong{font-size:11px;color:#dce2ed}
+.admin-library-quickbar span{margin-top:3px;font-size:9px;color:#69758d}
+@media(max-width:620px){
+  .admin-library-actions{width:100%}
+  .admin-library-actions button{flex:1}
+  .admin-library-quickbar{align-items:flex-start;flex-direction:column}
+  .admin-library-quickbar .admin-secondary{width:100%}
+}
