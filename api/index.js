@@ -252,30 +252,112 @@ app.post("/api/auth/register", async (req, res) => {
     });
     const session = await createSession(userId);
     setSession(res, session);
-    res.status(201).json({ ok: true, user: { name: safeText(name, 100), email, role: "user" }, csrfToken: session.csrf });
+    res.status(201).json({ ok: true, user: { name: safeText(name, 100), email, role: "user", mustChangePassword: false }, csrfToken: session.csrf });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Registration failed" });
   }
 });
 
+async function getOrCreateBootstrapAdmin() {
+  const path = "users/admin";
+  let user = await get(path);
+  if (!user) {
+    user = {
+      name: "Administrator",
+      email: "admin",
+      passwordHash: passwordHash("admin"),
+      role: "admin",
+      status: "ACTIVE",
+      mustChangePassword: true,
+      createdAt: now(),
+      updatedAt: now()
+    };
+    await set(path, user);
+  }
+  return { user, userId: "admin" };
+}
+
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email: rawEmail, password, otp } = req.body || {};
-    const email = String(rawEmail || "").trim().toLowerCase();
-    if (!validEmail(email) || typeof password !== "string") return res.status(400).json({ error: "Invalid credentials" });
-    const userId = hash(email);
-    const user = await get("users/" + userId);
-    if (!user || user.status !== "ACTIVE" || !passwordOK(password, user.passwordHash)) return res.status(401).json({ error: "Invalid email or password" });
-    if (user.role === "admin" && process.env.ADMIN_TOTP_SECRET) {
+    const login = String(rawEmail || "").trim().toLowerCase();
+    const isBootstrapAdmin = login === "admin";
+    let userId;
+    let user;
+
+    if (isBootstrapAdmin) {
+      const bootstrap = await getOrCreateBootstrapAdmin();
+      userId = bootstrap.userId;
+      user = bootstrap.user;
+    } else {
+      if (!validEmail(login) || typeof password !== "string") return res.status(400).json({ error: "Invalid credentials" });
+      userId = hash(login);
+      user = await get("users/" + userId);
+    }
+
+    if (!user || user.status !== "ACTIVE" || typeof password !== "string" || !passwordOK(password, user.passwordHash)) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    // The factory admin account is allowed one password-only login so it can be secured
+    // immediately. Every later admin login requires TOTP when configured.
+    const firstLogin = user.role === "admin" && user.mustChangePassword === true;
+    if (user.role === "admin" && !firstLogin && process.env.ADMIN_TOTP_SECRET) {
       if (!verifyTotp(String(process.env.ADMIN_TOTP_SECRET), String(otp || ""))) {
         return res.status(401).json({ error: "Admin verification code required", code: "ADMIN_OTP_REQUIRED" });
       }
     }
+
     const session = await createSession(userId);
     setSession(res, session);
-    res.json({ ok: true, user: { name: user.name, email: user.email, role: user.role }, csrfToken: session.csrf });
+    res.json({
+      ok: true,
+      user: { name: user.name, email: user.email, role: user.role, mustChangePassword: Boolean(user.mustChangePassword) },
+      csrfToken: session.csrf
+    });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Login failed" });
+  }
+});
+
+app.post("/api/auth/change-password", async (req, res) => {
+  try {
+    const auth = await guard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const currentPassword = req.body?.currentPassword;
+    const newPassword = req.body?.newPassword;
+
+    if (typeof currentPassword !== "string" || !passwordOK(currentPassword, auth.user.passwordHash)) {
+      return res.status(401).json({ error: "Current password is incorrect" });
+    }
+    if (!validPassword(newPassword)) {
+      return res.status(400).json({ error: "New password must be 10-128 characters and include uppercase, lowercase, and a number" });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ error: "New password must be different from the current password" });
+    }
+
+    const userPath = "users/" + auth.userId;
+    await update(userPath, {
+      passwordHash: passwordHash(newPassword),
+      mustChangePassword: false,
+      updatedAt: now()
+    });
+
+    const sessions = await db.ref("sessions").orderByChild("userId").equalTo(auth.userId).once("value");
+    const sessionUpdates = {};
+    sessions.forEach(child => {
+      if (child.key !== auth.id) {
+        sessionUpdates["sessions/" + child.key + "/revoked"] = true;
+        sessionUpdates["sessions/" + child.key + "/revokedAt"] = now();
+      }
+    });
+    if (Object.keys(sessionUpdates).length) await db.ref().update(sessionUpdates);
+
+    await audit("PASSWORD_CHANGED", auth);
+    res.json({ ok: true, message: "Password changed successfully." });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Password change failed" });
   }
 });
 
@@ -374,7 +456,7 @@ app.post("/api/auth/logout", async (req, res) => {
 app.get("/api/auth/me", async (req, res) => {
   const auth = await current(req);
   if (!auth) return res.status(401).json({ error: "Not logged in" });
-  res.json({ user: { name: auth.user.name, email: auth.user.email, role: auth.user.role }, csrfToken: req.cookies.ms_csrf || "" });
+  res.json({ user: { name: auth.user.name, email: auth.user.email, role: auth.user.role, mustChangePassword: Boolean(auth.user.mustChangePassword) }, csrfToken: req.cookies.ms_csrf || "" });
 });
 
 app.get("/api/books", async (req, res) => {
