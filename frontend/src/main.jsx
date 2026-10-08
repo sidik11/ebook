@@ -1168,8 +1168,9 @@ function App() {
           <Route path="/setadmin" element={<SetAdmin />} />
           <Route path="/library" element={user ? <Library /> : <Navigate to="/login" replace />} />
           <Route path="/read/:id" element={user ? <Reader /> : <Navigate to="/login" replace />} />
+          <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <AdminLogin />} />
           <Route path="/admin/admin" element={<AdminLogin />} />
-          <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <Navigate to="/admin/admin" replace />} />
+          <Route path="/admin/login" element={<AdminLogin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
