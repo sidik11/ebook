@@ -419,7 +419,7 @@ app.use((req, res, next) => {
   res.set("X-Frame-Options", "SAMEORIGIN");
   res.set("Referrer-Policy", "strict-origin-when-cross-origin");
   res.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  if (isProduction) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   res.set("Cache-Control", req.path.includes("/api/") ? "no-store" : "public, max-age=60");
 
   const origin = req.get("origin");
@@ -1192,9 +1192,8 @@ function verifyTotp(secret, code) {
   return false;
 }
 
-// Mount the API router at both /api and / to handle all routing environments seamlessly
+// Keep the API surface under /api only. The frontend SPA owns all other routes.
 app.use("/api", router);
-app.use("/", router);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
