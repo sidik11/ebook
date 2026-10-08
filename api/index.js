@@ -505,12 +505,11 @@ router.post("/auth/register", async (req, res) => {
       createdAt: now(),
       updatedAt: now()
     });
-    const session = await createSession(userId);
-    setSession(res, session);
+    // Registration creates the account only. Authentication happens explicitly through /auth/login.
     res.status(201).json({
       ok: true,
-      user: { name: safeText(name, 100), email, role: "user", mustChangePassword: false },
-      csrfToken: session.csrf
+      registered: true,
+      user: { name: safeText(name, 100), email, role: "user", mustChangePassword: false }
     });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Registration failed" });
