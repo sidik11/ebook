@@ -574,7 +574,6 @@ router.post("/setup/admin", async (req, res) => {
     const emailOwner = await get("users/" + hash(email));
     if (emailOwner && emailOwner.role !== "admin") return res.status(409).json({ error: "That email is already registered to another account." });
 
-    const db = requireDb();
     const usersSnap = await db.ref("users").once("value");
     const existingAdmins = [];
     usersSnap.forEach(child => {
