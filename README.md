@@ -11,7 +11,7 @@ Production-oriented ebook platform using one Vercel deployment, one Firebase pro
 - **File storage:** private Firebase Storage for PDF/cover binaries only
 - **Authentication:** custom email/password authentication; Firebase Auth is not used
 - **Payments:** Razorpay
-- **Abuse protection:** bounded in-memory rate limiting for authentication endpoints; use a distributed limiter such as Upstash for multi-instance production deployments
+- **Abuse protection:** Firebase RTDB transaction-backed per-IP rate limiting for authentication endpoints, so limits are shared across Vercel function instances
 
 There is no Firestore dependency and no Firebase Functions backend.
 
@@ -37,7 +37,7 @@ All client RTDB reads/writes are denied. The Vercel API uses Firebase Admin SDK 
 - CSRF token validation on state-changing authenticated requests
 - current RTDB user record is the source of truth for admin authorization
 - optional admin TOTP verification
-- per-IP authentication throttling (in-memory per warm function instance)
+- transaction-backed per-IP authentication throttling
 - Razorpay signature + captured-status + amount verification
 - Razorpay webhook signature verification and reconciliation
 - idempotent purchase/payment handling
@@ -45,7 +45,7 @@ All client RTDB reads/writes are denied. The Vercel API uses Firebase Admin SDK 
 - security headers and HSTS
 - admin audit log
 
-Authentication endpoints also have basic per-IP request throttling. Browser copy/right-click/print controls are only deterrence. A PDF delivered to a browser cannot be made literally impossible to screenshot or extract.
+Authentication endpoints use a shared RTDB-backed transaction limiter. Browser copy/right-click/print controls are only deterrence. A PDF delivered to a browser cannot be made literally impossible to screenshot or extract.
 
 ## Vercel environment variables
 
@@ -64,9 +64,13 @@ RAZORPAY_WEBHOOK_SECRET=
 
 
 PUBLIC_ORIGIN=https://YOUR_DOMAIN
-ADMIN_INITIAL_EMAIL=
-ADMIN_INITIAL_PASSWORD=
+ADMIN_SETUP_KEY=
 ADMIN_TOTP_SECRET=
+AUTH_SESSION_SECRET=
+GMAIL_CLIENT_ID=
+GMAIL_CLIENT_SECRET=
+GMAIL_REFRESH_TOKEN=
+GMAIL_SENDER_EMAIL=
 ```
 
 Never commit real secrets.
@@ -74,8 +78,8 @@ Never commit real secrets.
 ## Deploy
 
 1. Import the repository into Vercel.
-2. Keep the repository root as the Vercel project root; Vercel detects `api/index.js` as a Node.js Function.
-3. Add the environment variables above.
+2. Keep the repository root as the Vercel project root; the repository's Vercel configuration routes `/api/*` to `api/index.js` and the Vite build to `frontend/dist`.
+3. Add the environment variables above. `ADMIN_SETUP_KEY` must be a strong random secret of at least 16 characters.
 4. Deploy.
 5. Deploy RTDB rules with Firebase CLI when needed:
    `firebase deploy --only database`
@@ -105,7 +109,7 @@ Before accepting real customer payments:
 - set `PUBLIC_ORIGIN` to the exact origin
 - configure a strong admin TOTP secret
 - configure the Razorpay webhook
-- add a distributed rate limiter if you expect multiple concurrent function instances or high-volume login traffic
+- keep `ADMIN_SETUP_KEY` private and rotate it after initial administrator creation if desired
 - rotate any credentials that were ever exposed
 - keep RTDB and Storage rules closed
 - back up RTDB before migrations
