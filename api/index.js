@@ -71,28 +71,6 @@ function key(value) {
   return String(value).replace(/[.#$\\[\\]/]/g, "_").slice(0, 768);
 }
 
-async function redis(command, args = []) {
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) return null;
-  const response = await fetch(process.env.UPSTASH_REDIS_REST_URL, {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + process.env.UPSTASH_REDIS_REST_TOKEN,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify([command, ...args])
-  });
-  if (!response.ok) throw new Error("Rate-limit service unavailable");
-  return (await response.json()).result;
-}
-async function rateLimit(id, count, seconds) {
-  if (!process.env.UPSTASH_REDIS_REST_URL) return;
-  const value = await redis("INCR", [id]);
-  if (Number(value) === 1) await redis("EXPIRE", [id, seconds]);
-  if (Number(value) > count) fail(429, "Too many requests. Please try again later.");
-}
-async function atomic(path, updater) {
-  return db.ref(path).transaction(updater);
-}
 async function get(path) {
   return db.ref(path).once("value").then(s => s.exists() ? s.val() : null);
 }
@@ -227,7 +205,6 @@ app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email: rawEmail, password } = req.body || {};
     const email = String(rawEmail || "").trim().toLowerCase();
-    await rateLimit("reg:" + hash(email), 5, 3600);
     if (!safeText(name, 100) || !validEmail(email) || !validPassword(password)) return res.status(400).json({ error: "Invalid account details" });
     const userId = hash(email);
     const path = "users/" + userId;
@@ -248,7 +225,6 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const { email: rawEmail, password, otp } = req.body || {};
     const email = String(rawEmail || "").trim().toLowerCase();
-    await rateLimit("login:" + hash(email), 10, 900);
     if (!validEmail(email) || typeof password !== "string") return res.status(400).json({ error: "Invalid credentials" });
     const userId = hash(email);
     const user = await get("users/" + userId);
@@ -406,7 +382,6 @@ app.post("/api/orders/create", async (req, res) => {
   try {
     const auth = await guard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
-    await rateLimit("order:" + auth.userId, 5, 60);
     const bookId = key(req.body?.bookId);
     const book = await get("books/" + bookId);
     if (!book || book.status !== "ACTIVE") return res.status(404).json({ error: "Book not found" });
@@ -414,8 +389,6 @@ app.post("/api/orders/create", async (req, res) => {
     if (book.type === "FREE" || !pricePaise) return res.status(400).json({ error: "This ebook is free. No payment is required" });
     const purchase = await owned(auth.userId, bookId);
     if (purchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
-    const lock = "order-lock:" + auth.userId + ":" + bookId;
-    if (await redis("SET", [lock, "1", "NX", "EX", 30]) === null) return res.status(409).json({ error: "Order already in progress" });
     try {
       const razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
       const order = await razorpay.orders.create({
@@ -428,9 +401,6 @@ app.post("/api/orders/create", async (req, res) => {
         status: "CREATED", createdAt: now(), razorpayOrderId: order.id
       });
       res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title });
-    } finally {
-      await redis("DEL", [lock]).catch(() => {});
-    }
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create order" });
   }
@@ -525,7 +495,6 @@ app.get("/api/books/:id/secure-url", async (req, res) => {
   try {
     const auth = await guard(req, res);
     if (!auth) return;
-    await rateLimit("reader:" + auth.userId, 30, 60);
     const id = key(req.params.id);
     const book = await get("books/" + id);
     if (!book || book.status !== "ACTIVE" || !book.storagePath) return res.status(404).json({ error: "Ebook unavailable" });
