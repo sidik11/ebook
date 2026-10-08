@@ -278,24 +278,88 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-async function getOrCreateBootstrapAdmin() {
-  const legacyPath = "users/admin";
-  const legacy = await get(legacyPath);
-  if (legacy) return { user: legacy, userId: "admin" };
+function validAdminId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{3,64}$/.test(value);
+}
 
-  const email = String(process.env.ADMIN_INITIAL_EMAIL || "").trim().toLowerCase();
-  const password = String(process.env.ADMIN_INITIAL_PASSWORD || "");
-  if (!validEmail(email) || !validPassword(password)) {
-    fail(500, "Admin bootstrap is not configured. Set ADMIN_INITIAL_EMAIL and ADMIN_INITIAL_PASSWORD.");
+async function findUserByEmail(email) {
+  const normalized = String(email || "").trim().toLowerCase();
+  if (!validEmail(normalized)) return null;
+  const hashedId = hash(normalized);
+  const direct = await get("users/" + hashedId);
+  if (direct) return { userId: hashedId, user: direct };
+  const indexedId = await get("adminEmailIndex/" + hashedId);
+  if (indexedId) {
+    const indexed = await get("users/" + indexedId);
+    if (indexed) return { userId: indexedId, user: indexed };
   }
-  const userId = hash(email);
-  const path = "users/" + userId;
-  let user = await get(path);
-  if (!user) {
-    user = { name: "Administrator", email, passwordHash: passwordHash(password), role: "admin", status: "ACTIVE", mustChangePassword: true, createdAt: now(), updatedAt: now() };
-    await set(path, user);
+  return null;
+}
+
+async function adminSetupComplete() {
+  return Boolean(await get("system/adminSetup"));
+}
+
+app.get("/api/setup/admin", async (req, res) => {
+  try {
+    if (await adminSetupComplete()) return res.status(410).json({ error: "Admin setup is already completed." });
+    const legacy = await get("users/admin");
+    const legacyAdmin = legacy?.role === "admin" ? legacy : null;
+    res.json({ ok: true, setupRequired: true, existingLegacyAdmin: Boolean(legacyAdmin) });
+  } catch {
+    res.status(500).json({ error: "Admin setup status unavailable" });
   }
-  return { user, userId };
+});
+
+app.post("/api/setup/admin", async (req, res) => {
+  try {
+    enforceRateLimit(req, "admin-setup", 3);
+    if (await adminSetupComplete()) return res.status(410).json({ error: "Admin setup is already completed." });
+
+    const adminId = safeText(req.body?.adminId, 64);
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password;
+
+    if (!validAdminId(adminId)) return res.status(400).json({ error: "Admin ID must be 3-64 characters using letters, numbers, _ or -." });
+    if (!validEmail(email)) return res.status(400).json({ error: "Enter a valid admin email address." });
+    if (!validPassword(password)) return res.status(400).json({ error: "Password must be 10-128 characters and include uppercase, lowercase, and a number." });
+
+    const targetPath = "users/" + adminId;
+    const existingTarget = await get(targetPath);
+    if (existingTarget && existingTarget.role !== "admin") return res.status(409).json({ error: "That admin ID is already used by another account." });
+
+    const legacy = await get("users/admin");
+    if (legacy && legacy.role !== "admin" && adminId === "admin") return res.status(409).json({ error: "The admin ID is already used by another account." });
+
+    const oldAdminEmail = legacy?.role === "admin" ? legacy.email : null;
+    const user = {
+      name: "Administrator",
+      email,
+      passwordHash: passwordHash(password),
+      role: "admin",
+      status: "ACTIVE",
+      mustChangePassword: false,
+      createdAt: existingTarget?.createdAt || now(),
+      updatedAt: now()
+    };
+
+    const updates = {};
+    updates[targetPath] = user;
+    updates["adminEmailIndex/" + hash(email)] = adminId;
+    updates["system/adminSetup"] = { completedAt: now(), userId: adminId, email };
+
+    if (legacy?.role === "admin" && adminId !== "admin") {
+      updates["users/admin"] = null;
+      if (oldAdminEmail && validEmail(oldAdminEmail)) updates["adminEmailIndex/" + hash(oldAdminEmail)] = null;
+    }
+
+    await db.ref().update(updates);
+    await audit("ADMIN_SETUP_COMPLETED", { userId: adminId, user }, { adminId, email });
+    res.status(201).json({ ok: true, message: "Admin account created. The setup page is now permanently locked.", user: { name: user.name, email: user.email, role: user.role } });
+  } catch (e) {
+    console.error("Admin setup error", e);
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Admin setup failed" });
+  }
 }
 
 app.post("/api/auth/login", async (req, res) => {
@@ -303,18 +367,19 @@ app.post("/api/auth/login", async (req, res) => {
     enforceRateLimit(req, "login", RATE_LIMITS.login);
     const { email: rawEmail, password, otp } = req.body || {};
     const login = String(rawEmail || "").trim().toLowerCase();
-    const isLegacyAdmin = login === "admin";
     let userId;
     let user;
 
-    if (isLegacyAdmin) {
-      const bootstrap = await getOrCreateBootstrapAdmin();
-      userId = bootstrap.userId;
-      user = bootstrap.user;
+    if (login === "admin") {
+      const legacy = await get("users/admin");
+      if (!legacy || legacy.role !== "admin") return res.status(401).json({ error: "Invalid email or password" });
+      userId = "admin";
+      user = legacy;
     } else {
       if (!validEmail(login) || typeof password !== "string") return res.status(400).json({ error: "Invalid credentials" });
-      userId = hash(login);
-      user = await get("users/" + userId);
+      const found = await findUserByEmail(login);
+      userId = found?.userId;
+      user = found?.user;
     }
 
     if (!user || user.status !== "ACTIVE" || typeof password !== "string" || !passwordOK(password, user.passwordHash)) {
@@ -390,8 +455,9 @@ app.post("/api/auth/forgot-password", async (req, res) => {
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
     if (!validEmail(email)) return res.status(200).json(generic);
-    const userId = hash(email);
-    const user = await get("users/" + userId);
+    const found = await findUserByEmail(email);
+    const userId = found?.userId;
+    const user = found?.user;
     if (!user || user.status !== "ACTIVE") return res.status(200).json(generic);
 
     const otp = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
