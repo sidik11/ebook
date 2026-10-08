@@ -6,6 +6,7 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import "./styles.css";
+import AdminPanel from "./AdminPanel";
 
 // Global CSRF token cache
 let cachedCsrfToken = "";
@@ -1400,9 +1401,7 @@ function App() {
           <Route path="/setadmin" element={<SetAdmin />} />
           <Route path="/library" element={user ? <Library /> : <Navigate to="/login" replace />} />
           <Route path="/read/:id" element={user ? <Reader /> : <Navigate to="/login" replace />} />
-          <Route path="/admin" element={user?.role === "admin" ? <Admin /> : <AdminLogin />} />
-          <Route path="/admin/admin" element={<AdminLogin />} />
-          <Route path="/admin/login" element={<AdminLogin />} />
+          <Route path="/admin/*" element={user?.role === "admin" ? <AdminPanel /> : <AdminLogin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
