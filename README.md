@@ -1,73 +1,111 @@
 # MS Tech EBook
 
-Firebase-backed ebook platform with manual server-side authentication.
+Production-oriented ebook platform using one Vercel deployment, one Firebase project, and Firebase Realtime Database.
 
-## Authentication
+## Architecture
 
-Firebase Authentication is NOT used.
+- **Frontend:** React + Vite
+- **Backend:** Node.js + Express in `api/index.js`
+- **Hosting:** one Vercel project
+- **Database:** Firebase Realtime Database (RTDB)
+- **File storage:** private Firebase Storage for PDF/cover binaries only
+- **Authentication:** custom email/password authentication; Firebase Auth is not used
+- **Payments:** Razorpay
+- **Rate limiting:** Upstash Redis
 
-The authentication model uses:
-- Node.js/Express backend
-- Email + password registration/login
-- Server-side scrypt password hashing
-- Opaque random sessions stored in Firestore
-- HttpOnly, Secure, SameSite session cookie
-- Session expiry and server-side revocation
-- Blocked-account checks
-- CSRF protection and same-origin checks
-- Redis-backed rate limits
+There is no Firestore dependency and no Firebase Functions backend.
 
-The browser never talks to Firebase Auth.
+## RTDB model
 
-## Data and files
+```
+users/{sha256(email)}
+sessions/{sha256(sessionToken)}
+books/{bookId}
+purchases/{sha256(userId:bookId)}
+orders/{razorpayOrderId}
+paymentEvents/{razorpayPaymentId}
+auditLogs/{auditId}
+```
 
-- Firestore is the application database.
-- Firebase Storage contains private ebook files.
-- Firestore client rules are closed; backend uses Firebase Admin SDK.
-- Storage client rules are closed; backend creates short-lived signed URLs.
+All client RTDB reads/writes are denied. The Vercel API uses Firebase Admin SDK credentials.
 
 ## Security
 
-- Redis/Upstash rate limiting
-- Payment replay protection
-- Razorpay signature verification
-- Razorpay captured-status and amount verification
-- Duplicate order protection
-- Private ebook storage
-- Five-minute signed ebook URLs
-- HSTS and security headers
-- Reader copy/right-click/selection/save/print/source blocking
+- scrypt password hashing
+- opaque random session tokens stored server-side
+- HttpOnly + Secure + SameSite cookies
+- CSRF token validation on state-changing authenticated requests
+- current RTDB user record is the source of truth for admin authorization
+- optional admin TOTP verification
+- Redis rate limits
+- Razorpay signature + captured-status + amount verification
+- Razorpay webhook signature verification and reconciliation
+- idempotent purchase/payment handling
+- short-lived private Storage signed URLs
+- security headers and HSTS
+- admin audit log
 
-Browser anti-copy controls are deterrence, not DRM. Visible browser content cannot be made literally impossible to screenshot or extract.
+Browser copy/right-click/print controls are only deterrence. A PDF delivered to a browser cannot be made literally impossible to screenshot or extract.
 
-## Environment
+## Vercel environment variables
 
-Functions environment variables:
-RAZORPAY_KEY_ID=your_razorpay_key_id
-RAZORPAY_KEY_SECRET=your_razorpay_key_secret
-RAZORPAY_WEBHOOK_SECRET=your_webhook_secret
-UPSTASH_REDIS_REST_URL=https://your-redis.upstash.io
-UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_rest_token
-PUBLIC_ORIGIN=https://your-domain.com
-AUTH_SESSION_SECRET=generate_a_long_random_secret
-ADMIN_OTP_SECRET=generate_a_separate_long_random_secret
+Set these in the single Vercel project:
+
+```
+FIREBASE_PROJECT_ID=
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=
+FIREBASE_DATABASE_URL=
+FIREBASE_STORAGE_BUCKET=
+
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+RAZORPAY_WEBHOOK_SECRET=
+
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+
+PUBLIC_ORIGIN=https://YOUR_DOMAIN
+ADMIN_TOTP_SECRET=
+```
 
 Never commit real secrets.
 
 ## Deploy
 
-npm run install-all
-npm run build
-firebase login
-firebase use YOUR_FIREBASE_PROJECT_ID
-firebase deploy
+1. Import the repository into Vercel.
+2. Keep the repository root as the Vercel project root.
+3. Add the environment variables above.
+4. Deploy.
+5. Deploy RTDB rules with Firebase CLI when needed:
+   `firebase deploy --only database`
+6. Configure Razorpay webhook:
+   `https://YOUR_DOMAIN/api/webhooks/razorpay`
+7. Test registration, login, admin TOTP, upload, free reading, paid checkout, webhook reconciliation, library access, and logout.
 
-Hosting routes /api/** to the manual-auth backend.
+## Admin ebook management
 
-## Ebook management
+The admin panel supports:
 
-Admin can upload PDF ebooks and cover images through the protected admin panel. Each ebook can be marked FREE or PAID. Free ebooks require no Razorpay payment and are automatically available in the signed-url reader; paid ebooks require a verified Razorpay payment. Admins can edit metadata, publish/unpublish, and permanently delete ebooks.
+- PDF upload
+- cover upload
+- FREE / PAID pricing
+- metadata editing
+- publish / unpublish
+- deletion
+- audit logging
 
-## Production follow-up
+PDFs and covers remain private in Firebase Storage. RTDB stores metadata and authorization/payment state.
 
-Before launch, add admin OTP authentication, account-recovery OTP, audit logging, and Razorpay webhook reconciliation. The core manual user authentication, session, payment, ownership, and secure ebook access path is server-side.
+## Production requirements
+
+Before accepting real customer payments:
+
+- use a custom Vercel domain
+- set `PUBLIC_ORIGIN` to the exact origin
+- configure a strong admin TOTP secret
+- configure the Razorpay webhook
+- configure Upstash Redis
+- rotate any credentials that were ever exposed
+- keep RTDB and Storage rules closed
+- back up RTDB before migrations
