@@ -865,52 +865,111 @@ router.get("/books/:id", async (req, res) => {
   }
 });
 
+// Browser uploads use a signed multipart POST policy instead of a cross-origin PUT.
+// This avoids a CORS preflight and does not require granting the service account
+// permission to modify the bucket's CORS configuration.
 router.post("/admin/storage-cors", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
-    const origin = String(process.env.PUBLIC_ORIGIN || "").trim();
-    if (!origin) return res.status(500).json({ error: "PUBLIC_ORIGIN is not configured" });
-    const origins = [origin];
-    if (/^https?:\/\/localhost(?::\d+)?$/.test(origin)) origins.push("http://localhost:5173");
-    const bucket = requireBucket();
-    await bucket.setCorsConfiguration([{
-      origin: origins,
-      method: ["GET", "HEAD", "PUT", "POST", "OPTIONS"],
-      responseHeader: ["Content-Type", "x-goog-resumable", "x-goog-generation"],
-      maxAgeSeconds: 3600
-    }]);
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      uploadMode: "signed-post",
+      message: "Bucket CORS configuration is not required for administrator uploads."
+    });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not configure Firebase Storage CORS" });
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Storage upload configuration unavailable" });
   }
 });
+
+const STORAGE_UPLOADS = {
+  "application/pdf": { folder: "ebooks", max: 100 * 1024 * 1024, ext: "pdf" },
+  "image/jpeg": { folder: "covers", max: 10 * 1024 * 1024, ext: "jpg" },
+  "image/png": { folder: "covers", max: 10 * 1024 * 1024, ext: "png" },
+  "image/webp": { folder: "covers", max: 10 * 1024 * 1024, ext: "webp" }
+};
+
+function storageUploadSpec(type) {
+  return STORAGE_UPLOADS[type] || null;
+}
+
+function isManagedStoragePath(storagePath) {
+  return /^private\/(ebooks|covers)\/[a-f0-9-]+\.(pdf|jpg|png|webp)$/.test(String(storagePath || ""));
+}
 
 router.post("/admin/upload-url", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
     const { name, type, size } = req.body || {};
-    const allowed = {
-      "application/pdf": { folder: "ebooks", max: 100 * 1024 * 1024, ext: "pdf" },
-      "image/jpeg": { folder: "covers", max: 10 * 1024 * 1024, ext: "jpg" },
-      "image/png": { folder: "covers", max: 10 * 1024 * 1024, ext: "png" },
-      "image/webp": { folder: "covers", max: 10 * 1024 * 1024, ext: "webp" }
-    };
-    const spec = allowed[type];
+    const spec = storageUploadSpec(type);
     if (!name) return res.status(400).json({ error: "File name is required" });
     if (!spec) return res.status(400).json({ error: "Unsupported file type. Use PDF, JPG, PNG, or WEBP." });
     if (!Number.isFinite(Number(size)) || Number(size) <= 0) return res.status(400).json({ error: "Invalid file size" });
     if (Number(size) > spec.max) return res.status(400).json({ error: `File is too large. Maximum allowed for this file type is ${Math.round(spec.max / (1024 * 1024))} MB.` });
+
     const storagePath = "private/" + spec.folder + "/" + crypto.randomUUID() + "." + spec.ext;
     const bucket = requireBucket();
-    const [url] = await bucket.file(storagePath).getSignedUrl({
-      version: "v4", action: "write", expires: now() + 15 * 60 * 1000,
-      contentType: type, extensionHeaders: { "content-type": type }
+    const file = bucket.file(storagePath);
+    const [policy] = await file.generateSignedPostPolicyV4({
+      expires: new Date(now() + 15 * 60 * 1000),
+      fields: { "Content-Type": type },
+      conditions: [
+        ["eq", "$Content-Type", type],
+        ["content-length-range", 1, spec.max]
+      ]
     });
-    res.json({ url, path: storagePath, maxBytes: spec.max });
+
+    res.json({
+      mode: "signed-post",
+      url: policy.url,
+      fields: policy.fields,
+      path: storagePath,
+      maxBytes: spec.max,
+      expiresAt: now() + 15 * 60 * 1000
+    });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.status ? e.message : "Upload URL could not be created" });
+    console.error("Upload policy error:", e);
+    res.status(e.status || 500).json({
+      error: e.status ? e.message : "Could not create secure upload policy",
+      code: e.code || "UPLOAD_POLICY_ERROR"
+    });
+  }
+});
+
+router.get("/admin/upload-status", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    const storagePath = String(req.query?.path || "");
+    if (!isManagedStoragePath(storagePath)) return res.status(400).json({ error: "Invalid upload path" });
+    const bucket = requireBucket();
+    const file = bucket.file(storagePath);
+    const [exists] = await file.exists();
+    if (!exists) return res.json({ uploaded: false, path: storagePath });
+    const [metadata] = await file.getMetadata();
+    res.json({
+      uploaded: true,
+      path: storagePath,
+      size: Number(metadata.size || 0),
+      contentType: metadata.contentType || null
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not verify uploaded file" });
+  }
+});
+
+router.delete("/admin/upload-file", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const storagePath = String(req.body?.path || "");
+    if (!isManagedStoragePath(storagePath)) return res.status(400).json({ error: "Invalid upload path" });
+    const bucket = requireBucket();
+    await bucket.file(storagePath).delete({ ignoreNotFound: true });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not remove incomplete upload" });
   }
 });
 
