@@ -328,6 +328,9 @@ app.post("/api/setup/admin", async (req, res) => {
     const existingTarget = await get(targetPath);
     if (existingTarget && existingTarget.role !== "admin") return res.status(409).json({ error: "That admin ID is already used by another account." });
 
+    const emailOwner = await get("users/" + hash(email));
+    if (emailOwner && emailOwner.role !== "admin") return res.status(409).json({ error: "That email is already registered to another account." });
+
     const usersSnap = await db.ref("users").once("value");
     const existingAdmins = [];
     usersSnap.forEach(child => {
