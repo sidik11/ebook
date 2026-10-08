@@ -11,7 +11,7 @@ Production-oriented ebook platform using one Vercel deployment, one Firebase pro
 - **File storage:** private Firebase Storage for PDF/cover binaries only
 - **Authentication:** custom email/password authentication; Firebase Auth is not used
 - **Payments:** Razorpay
-- **Rate limiting:** Upstash Redis
+- **Abuse protection:** bounded in-memory rate limiting for authentication endpoints; use a distributed limiter such as Upstash for multi-instance production deployments
 
 There is no Firestore dependency and no Firebase Functions backend.
 
@@ -45,7 +45,7 @@ All client RTDB reads/writes are denied. The Vercel API uses Firebase Admin SDK 
 - security headers and HSTS
 - admin audit log
 
-Browser copy/right-click/print controls are only deterrence. A PDF delivered to a browser cannot be made literally impossible to screenshot or extract.
+Authentication endpoints also have basic per-IP request throttling. Browser copy/right-click/print controls are only deterrence. A PDF delivered to a browser cannot be made literally impossible to screenshot or extract.
 
 ## Vercel environment variables
 
@@ -66,6 +66,8 @@ UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 
 PUBLIC_ORIGIN=https://YOUR_DOMAIN
+ADMIN_INITIAL_EMAIL=
+ADMIN_INITIAL_PASSWORD=
 ADMIN_TOTP_SECRET=
 ```
 
@@ -74,7 +76,7 @@ Never commit real secrets.
 ## Deploy
 
 1. Import the repository into Vercel.
-2. Keep the repository root as the Vercel project root.
+2. Keep the repository root as the Vercel project root; Vercel detects `api/index.js` as a Node.js Function.
 3. Add the environment variables above.
 4. Deploy.
 5. Deploy RTDB rules with Firebase CLI when needed:
@@ -105,7 +107,7 @@ Before accepting real customer payments:
 - set `PUBLIC_ORIGIN` to the exact origin
 - configure a strong admin TOTP secret
 - configure the Razorpay webhook
-- configure Upstash Redis
+- configure distributed rate limiting if running multiple concurrent Vercel instances
 - rotate any credentials that were ever exposed
 - keep RTDB and Storage rules closed
 - back up RTDB before migrations
@@ -113,7 +115,7 @@ Before accepting real customer payments:
 
 ## Password reset by Gmail OTP
 
-Forgot-password uses the Gmail API from the Vercel server. Google OAuth credentials stay server-side; the browser never receives the Gmail refresh token. The API sends a one-time 6-digit OTP that expires after 10 minutes, allows five verification attempts, and revokes all existing sessions after a successful password change.
+Forgot-password uses the Gmail API from the Vercel server. Google OAuth credentials stay server-side; the browser never receives the Gmail refresh token. The API sends a one-time 6-digit OTP that expires after 10 minutes, allows five verification attempts, and revokes all existing sessions after a successful password reset.
 
 Set these Vercel environment variables:
 - `GMAIL_CLIENT_ID`
