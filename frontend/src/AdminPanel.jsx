@@ -277,6 +277,7 @@ function AdminPanel() {
     setUploadState(emptyUploadState);
 
     const uploadedPaths = [];
+    let published = false;
 
     try {
       if (!cover || !file) throw new Error("Select both a cover image and the PDF before publishing.");
@@ -303,6 +304,7 @@ function AdminPanel() {
         }),
       });
 
+      published = true;
       resetUpload();
       await loadBooks();
       setView("library");
@@ -311,7 +313,9 @@ function AdminPanel() {
         setQuery("");
       }
     } catch (err) {
-      for (const storagePath of uploadedPaths) {
+      if (published) {
+        showNotice("error", "The ebook was published, but the admin library refresh failed. Refresh the admin workspace; the stored files were kept.");
+      } else for (const storagePath of uploadedPaths) {
         try {
           await api("/api/admin/upload-file", {
             method: "DELETE",
