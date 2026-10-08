@@ -350,7 +350,18 @@ async function audit(action, auth, meta = {}) {
 }
 
 async function publicBook(bookId, data) {
-  const book = { id: bookId, ...data };
+  const rawPrice = Number(data?.price || 0);
+  const normalizedType = String(data?.type || "").toUpperCase() === "FREE" || rawPrice <= 0 ? "FREE" : "PAID";
+  const book = {
+    id: bookId,
+    title: safeText(data?.title, MAX_BOOK_TITLE),
+    author: safeText(data?.author, 120),
+    category: safeText(data?.category, 80),
+    description: safeText(data?.description, MAX_DESCRIPTION),
+    type: normalizedType,
+    price: normalizedType === "FREE" ? 0 : rawPrice,
+    status: "ACTIVE"
+  };
   delete book.storagePath;
   delete book.coverPath;
   delete book.storageProvider;
@@ -369,11 +380,16 @@ async function publicBook(bookId, data) {
 
 async function listBooks(activeOnly = true, limit = 100) {
   const db = requireDb();
-  let query = db.ref("books");
-  if (activeOnly) query = query.orderByChild("status").equalTo("ACTIVE");
-  const snap = await query.once("value");
+  // Normalize status in application code so older records with accidental
+  // casing differences do not disappear from the storefront.
+  const snap = await db.ref("books").once("value");
   const result = [];
-  snap.forEach(child => result.push({ id: child.key, data: child.val() }));
+  snap.forEach(child => {
+    const data = child.val() || {};
+    if (!activeOnly || String(data.status || "").toUpperCase() === "ACTIVE") {
+      result.push({ id: child.key, data });
+    }
+  });
   result.sort((a, b) => Number(b.data?.createdAt || 0) - Number(a.data?.createdAt || 0));
   return result.slice(0, limit);
 }
@@ -972,7 +988,17 @@ function normalizeBookInput(body) {
   if (!type || !safeText(body.title, MAX_BOOK_TITLE) || !body.storagePath || !body.coverPath || storageProvider !== "r2") fail(400, "Invalid book details");
   if (!isR2Path(body.storagePath) || !isR2Path(body.coverPath)) fail(400, "Book files must be stored in R2.");
   if (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE)) fail(400, "Invalid book price");
-  return { title: safeText(body.title, MAX_BOOK_TITLE), author: safeText(body.author, 120), category: safeText(body.category, 80), description: safeText(body.description, MAX_DESCRIPTION), type, price, storageProvider, storagePath: String(body.storagePath), coverPath: String(body.coverPath) };
+  return {
+    title: safeText(body.title, MAX_BOOK_TITLE),
+    author: safeText(body.author, 120),
+    category: safeText(body.category, 80),
+    description: safeText(body.description, MAX_DESCRIPTION),
+    type,
+    price: type === "FREE" ? 0 : Number(price),
+    storageProvider,
+    storagePath: String(body.storagePath),
+    coverPath: String(body.coverPath)
+  };
 }
 
 router.post("/admin/books", async (req, res) => {
