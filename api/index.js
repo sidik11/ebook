@@ -36,6 +36,25 @@ const MAX_BOOK_TITLE = 200;
 const MAX_DESCRIPTION = 5000;
 const PASSWORD_RESET_OTP_MS = 10 * 60 * 1000;
 const PASSWORD_RESET_OTP_ATTEMPTS = 5;
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const RATE_LIMITS = { login: 10, register: 8, forgot: 5 };
+const rateBuckets = new Map();
+function rateLimit(keyName, limit) {
+  const t = now();
+  const old = rateBuckets.get(keyName);
+  if (!old || t - old.startedAt >= RATE_WINDOW_MS) {
+    rateBuckets.set(keyName, { startedAt: t, count: 1 });
+    return true;
+  }
+  old.count += 1;
+  return old.count <= limit;
+}
+function requestIp(req) {
+  return String(req.ip || req.get("x-forwarded-for") || "unknown").split(",")[0].trim().slice(0, 80);
+}
+function enforceRateLimit(req, bucket, limit) {
+  if (!rateLimit(bucket + ":" + requestIp(req), limit)) fail(429, "Too many requests. Please try again later.");
+}
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const randomToken = () => crypto.randomBytes(32).toString("base64url");
 const now = () => Date.now();
@@ -62,7 +81,7 @@ function passwordOK(password, encoded) {
   }
 }
 function validEmail(value) {
-  return typeof value === "string" && value.length <= 254 && /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(value);
+  return typeof value === "string" && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 function validPassword(value) {
   return typeof value === "string" && value.length >= 10 && value.length <= 128 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value);
@@ -240,6 +259,7 @@ app.get("/api/health", (req, res) => res.json({ ok: true, service: "MS Tech EBoo
 
 app.post("/api/auth/register", async (req, res) => {
   try {
+    enforceRateLimit(req, "register", RATE_LIMITS.register);
     const { name, email: rawEmail, password } = req.body || {};
     const email = String(rawEmail || "").trim().toLowerCase();
     if (!safeText(name, 100) || !validEmail(email) || !validPassword(password)) return res.status(400).json({ error: "Invalid account details" });
@@ -259,33 +279,35 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 async function getOrCreateBootstrapAdmin() {
-  const path = "users/admin";
+  const legacyPath = "users/admin";
+  const legacy = await get(legacyPath);
+  if (legacy) return { user: legacy, userId: "admin" };
+
+  const email = String(process.env.ADMIN_INITIAL_EMAIL || "").trim().toLowerCase();
+  const password = String(process.env.ADMIN_INITIAL_PASSWORD || "");
+  if (!validEmail(email) || !validPassword(password)) {
+    fail(500, "Admin bootstrap is not configured. Set ADMIN_INITIAL_EMAIL and ADMIN_INITIAL_PASSWORD.");
+  }
+  const userId = hash(email);
+  const path = "users/" + userId;
   let user = await get(path);
   if (!user) {
-    user = {
-      name: "Administrator",
-      email: "admin",
-      passwordHash: passwordHash("admin"),
-      role: "admin",
-      status: "ACTIVE",
-      mustChangePassword: true,
-      createdAt: now(),
-      updatedAt: now()
-    };
+    user = { name: "Administrator", email, passwordHash: passwordHash(password), role: "admin", status: "ACTIVE", mustChangePassword: true, createdAt: now(), updatedAt: now() };
     await set(path, user);
   }
-  return { user, userId: "admin" };
+  return { user, userId };
 }
 
 app.post("/api/auth/login", async (req, res) => {
   try {
+    enforceRateLimit(req, "login", RATE_LIMITS.login);
     const { email: rawEmail, password, otp } = req.body || {};
     const login = String(rawEmail || "").trim().toLowerCase();
-    const isBootstrapAdmin = login === "admin";
+    const isLegacyAdmin = login === "admin";
     let userId;
     let user;
 
-    if (isBootstrapAdmin) {
+    if (isLegacyAdmin) {
       const bootstrap = await getOrCreateBootstrapAdmin();
       userId = bootstrap.userId;
       user = bootstrap.user;
@@ -310,6 +332,7 @@ app.post("/api/auth/login", async (req, res) => {
 
     const session = await createSession(userId);
     setSession(res, session);
+    rateBuckets.delete("login:" + requestIp(req));
     res.json({
       ok: true,
       user: { name: user.name, email: user.email, role: user.role, mustChangePassword: Boolean(user.mustChangePassword) },
@@ -362,6 +385,7 @@ app.post("/api/auth/change-password", async (req, res) => {
 });
 
 app.post("/api/auth/forgot-password", async (req, res) => {
+  try { enforceRateLimit(req, "forgot", RATE_LIMITS.forgot); } catch (e) { return res.status(e.status || 429).json({ error: e.message || "Too many requests" }); }
   const generic = { ok: true, message: "If an account exists for this email, a verification code has been sent." };
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
@@ -722,7 +746,7 @@ app.get("/api/books/:id/secure-url", async (req, res) => {
 function base32Decode(input) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   let bits = 0, value = 0, out = [];
-  for (const char of String(input).replace(/=+$/,"").toUpperCase().replace(/\\s/g,"")) {
+  for (const char of String(input).replace(/=+$/,"").toUpperCase().replace(/\s/g,"")) {
     const idx = alphabet.indexOf(char);
     if (idx < 0) throw new Error("Invalid TOTP secret");
     value = (value << 5) | idx; bits += 5;
