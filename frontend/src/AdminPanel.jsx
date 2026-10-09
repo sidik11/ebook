@@ -132,8 +132,43 @@ function AdminPanel() {
 
   const createSubAdmin = async event => {
     event.preventDefault(); setStaffBusy(true);
-    try { const data = await api("/api/admin/subadmins", { method: "POST", body: JSON.stringify({ userId: newSubAdminId, password: newSubAdminPassword, name: newSubAdminName }) }); setSubAdmins(current => [...current, { id: data.user.id, name: data.user.name, status: "ACTIVE", mustChangePassword: true }]); setNewSubAdminId(""); setNewSubAdminPassword(""); setNotice({type:"success",text:"Sub-admin created. Share the ID and temporary password securely; the user must change it after login."}); }
-    catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
+    try {
+      const data = await api("/api/admin/subadmins", { method: "POST", body: JSON.stringify({ userId: newSubAdminId, password: newSubAdminPassword, name: newSubAdminName }) });
+      setSubAdmins(current => [...current, { id: data.user.id, name: data.user.name, status: "ACTIVE" }]);
+      setNewSubAdminId(""); setNewSubAdminPassword("");
+      setNotice({type:"success",text:"Sub-admin account created. Share the credentials privately; only the main admin can change the password."});
+    } catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
+  };
+  const editSubAdmin = async item => {
+    const name = window.prompt("Edit display name for " + item.id, item.name || "");
+    if (name === null) return;
+    const password = window.prompt("Enter a new password to reset it, or leave blank to keep the current password. Minimum 10 characters with uppercase, lowercase and a number.");
+    if (password === null) return;
+    setStaffBusy(true);
+    try {
+      const body = { name: name.trim() };
+      if (password.trim()) body.password = password;
+      await api("/api/admin/subadmins/" + encodeURIComponent(item.id), { method: "PATCH", body: JSON.stringify(body) });
+      await loadSubAdmins();
+      setNotice({type:"success",text:"Sub-admin account updated. User ID remains unchanged."});
+    } catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
+  };
+  const setSubAdminStatus = async (item, status) => {
+    setStaffBusy(true);
+    try {
+      await api("/api/admin/subadmins/" + encodeURIComponent(item.id) + "/status", { method: "PATCH", body: JSON.stringify({ status }) });
+      await loadSubAdmins();
+      setNotice({type:"success",text:"Sub-admin " + (status === "BLOCKED" ? "blocked." : "unblocked.")});
+    } catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
+  };
+  const deleteSubAdmin = async item => {
+    if (!window.confirm("Delete sub-admin " + item.id + "? This cannot be undone.")) return;
+    setStaffBusy(true);
+    try {
+      await api("/api/admin/subadmins/" + encodeURIComponent(item.id), { method: "DELETE" });
+      setSubAdmins(current => current.filter(user => user.id !== item.id));
+      setNotice({type:"success",text:"Sub-admin account deleted."});
+    } catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
   };
   const reviewBook = async (book, decision) => {
     const note = String(reviewNotes[book.id] || "").trim();
@@ -1107,11 +1142,12 @@ function AdminPanel() {
               <form onSubmit={createSubAdmin} style={{display:"grid",gap:12,maxWidth:560}}>
                 <label>Display name<input value={newSubAdminName} onChange={e=>setNewSubAdminName(e.target.value)} maxLength={120} required /></label>
                 <label>User ID<input value={newSubAdminId} onChange={e=>setNewSubAdminId(e.target.value)} pattern="[A-Za-z0-9_-]{3,64}" placeholder="book_uploader01" required /></label>
-                <label>Temporary password<input type="password" value={newSubAdminPassword} onChange={e=>setNewSubAdminPassword(e.target.value)} minLength={10} placeholder="10+ chars, upper/lower/number" required /></label>
+                <label>Password<input type="password" autoComplete="new-password" value={newSubAdminPassword} onChange={e=>setNewSubAdminPassword(e.target.value)} minLength={10} placeholder="10+ chars, upper/lower/number" required /></label>
                 <button className="admin-primary" disabled={staffBusy}>Generate sub-admin login</button>
               </form>
               <h3 style={{marginTop:24}}>Existing sub-admin accounts</h3>
-              {subAdmins.length ? <div className="admin-table-wrap"><table><thead><tr><th>User ID</th><th>Name</th><th>Status</th><th>First login password change</th></tr></thead><tbody>{subAdmins.map(item=><tr key={item.id}><td>{item.id}</td><td>{item.name}</td><td>{item.status}</td><td>{item.mustChangePassword?"Required":"Complete"}</td></tr>)}</tbody></table></div> : <p>No sub-admin accounts created yet.</p>}
+              {subAdmins.length ? <div className="admin-table-wrap"><table><thead><tr><th>User ID (fixed)</th><th>Name</th><th>Status</th><th>Controls</th></tr></thead><tbody>{subAdmins.map(item=><tr key={item.id}><td>{item.id}</td><td>{item.name}</td><td>{item.status}</td><td style={{display:"flex",gap:6,flexWrap:"wrap"}}><button type="button" className="admin-secondary" disabled={staffBusy} onClick={()=>editSubAdmin(item)}>Edit / Reset password</button><button type="button" className={ "admin-user-action " + (item.status==="BLOCKED"?"restore":"block")} disabled={staffBusy} onClick={()=>setSubAdminStatus(item,item.status==="BLOCKED"?"ACTIVE":"BLOCKED")}>{item.status==="BLOCKED"?"Unblock":"Block"}</button><button type="button" className="admin-user-action block" disabled={staffBusy} onClick={()=>deleteSubAdmin(item)}>Delete</button></td></tr>)}</tbody></table></div> : <p>No sub-admin accounts created yet.</p>}
+              {notice.text && <p className={notice.type==="error"?"error":"success"}>{notice.text}</p>}}
             </div>
             <div className="admin-card">
               <SectionHeading eyebrow="PUBLISHING GATE" title="Books awaiting review" subtitle="Only the main administrator can publish sub-admin submissions." />
