@@ -76,7 +76,7 @@ function Layout({ children }) {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const isAdminArea = location.pathname.startsWith("/admin");
+  const isAdminArea = location.pathname.startsWith("/admin") || new URLSearchParams(location.search).get("portal") === "admin";
 
   async function handleLogout() {
     try {
