@@ -806,6 +806,10 @@ function SupportComplaint() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
 
+  if (!user) {
+    return <Navigate to={"/login?next=" + encodeURIComponent(window.location.pathname + window.location.search)} replace />;
+  }
+
   async function submit(e) {
     e.preventDefault();
     setError("");
@@ -1229,7 +1233,7 @@ function App() {
           <Route path="/books" element={<Books />} />
           <Route path="/books/:id" element={<Detail />} />
           <Route path="/refund-policy" element={<RefundPolicy />} />
-          <Route path="/support" element={portalUser ? <SupportComplaint /> : <SupportComplaint />} />
+          <Route path="/support" element={<SupportComplaint />} />
           <Route path="/login" element={<AuthForm />} />
           <Route path="/register" element={<AuthForm register />} />
           <Route path="/change-password" element={portalUser ? <ChangePassword /> : <Navigate to="/login" replace />} />
