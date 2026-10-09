@@ -765,6 +765,7 @@ router.post("/auth/change-password", async (req, res) => {
   try {
     const auth = await guard(req, res, requestPortal(req));
     if (!auth || !requireCsrf(req, res, auth)) return;
+    if (auth.user.role === "sadmin") return res.status(403).json({ error: "Sub-admin credentials can only be changed by the main administrator." });
     const currentPassword = req.body?.currentPassword;
     const newPassword = req.body?.newPassword;
 
