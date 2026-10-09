@@ -919,6 +919,13 @@ function App() {
     return () => { active = false; };
   }, [portal]);
 
+  // Do not briefly render an administrator identity on a customer route
+  // while the customer portal session is being checked (and vice versa).
+  const portalUser = user && (
+    (portal === "admin" && user.role === "admin") ||
+    (portal === "user" && user.role !== "admin")
+  ) ? user : null;
+
   if (loading) {
     return (
       <main className="center">
@@ -928,7 +935,7 @@ function App() {
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser }}>
+    <AuthContext.Provider value={{ user: portalUser, setUser }}>
       <Layout>
         <Routes>
           <Route path="/" element={<Home />} />
@@ -936,13 +943,13 @@ function App() {
           <Route path="/books/:id" element={<Detail />} />
           <Route path="/login" element={<AuthForm />} />
           <Route path="/register" element={<AuthForm register />} />
-          <Route path="/change-password" element={user ? <ChangePassword /> : <Navigate to="/login" replace />} />
+          <Route path="/change-password" element={portalUser ? <ChangePassword /> : <Navigate to="/login" replace />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/setadmin" element={<SetAdmin />} />
-          <Route path="/library" element={user ? <Library /> : <Navigate to="/login" replace />} />
-          <Route path="/read/:id" element={user ? <Reader /> : <Navigate to="/login" replace />} />
-          <Route path="/admin/*" element={user?.role === "admin" ? <AdminPanel /> : <AdminLogin />} />
+          <Route path="/library" element={portalUser ? <Library /> : <Navigate to="/login" replace />} />
+          <Route path="/read/:id" element={portalUser ? <Reader /> : <Navigate to="/login" replace />} />
+          <Route path="/admin/*" element={portalUser?.role === "admin" ? <AdminPanel /> : <AdminLogin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
