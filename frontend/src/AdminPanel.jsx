@@ -72,6 +72,10 @@ function AdminPanel() {
   const view = NAV.some(item => item.key === segment) ? segment : "dashboard";
 
   const [books, setBooks] = useState([]);
+  const existingCategories = useMemo(
+    () => Array.from(new Set(books.map(book => String(book.category || "").trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [books]
+  );
   const [orders, setOrders] = useState([]);
   const [complaints, setComplaints] = useState([]);
   const [complaintFilter, setComplaintFilter] = useState("ALL");
@@ -95,6 +99,8 @@ function AdminPanel() {
   const [newSubAdminName, setNewSubAdminName] = useState("Book Uploader");
   const [staffBusy, setStaffBusy] = useState(false);
   const [reviewNotes, setReviewNotes] = useState({});
+  const [reviewCategories, setReviewCategories] = useState({});
+  const [reviewNewCategories, setReviewNewCategories] = useState({});
 
   const [form, setForm] = useState({
     title: "",
@@ -172,10 +178,16 @@ function AdminPanel() {
   };
   const reviewBook = async (book, decision) => {
     const note = String(reviewNotes[book.id] || "").trim();
+    const categoryChoice = String(reviewCategories[book.id] || "").trim();
+    const category = categoryChoice === "__new__" ? String(reviewNewCategories[book.id] || "").trim() : categoryChoice;
+    if (decision === "APPROVE" && !category) { setNotice({type:"error",text:"Choose an existing category or enter a new category before publishing."}); return; }
     if (decision === "REJECT" && note.length < 5) { setNotice({type:"error",text:"Add a rejection reason of at least 5 characters."}); return; }
     setStaffBusy(true);
-    try { await api("/api/admin/books/" + encodeURIComponent(book.id) + "/review", {method:"PATCH",body:JSON.stringify({decision,note})}); await loadBooks(); setNotice({type:"success",text:decision === "APPROVE" ? "Book approved and published to customers." : "Book rejected and kept unpublished."}); }
-    catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
+    try {
+      await api("/api/admin/books/" + encodeURIComponent(book.id) + "/review", {method:"PATCH",body:JSON.stringify({decision,note,...(decision === "APPROVE" ? {category} : {})})});
+      await loadBooks();
+      setNotice({type:"success",text:decision === "APPROVE" ? "Book categorized, approved, and published to customers." : "Book rejected and kept unpublished."});
+    } catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
   };
 
   const loadBooks = async () => {
@@ -839,8 +851,11 @@ function AdminPanel() {
                   </Field>
                 </div>
                 <div className="admin-two-col">
-                  <Field label="Category">
-                    <input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} placeholder="Technology, Engineering…" />
+                  <Field label="Category" required>
+                    <input list="ebook-category-options" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} placeholder="Choose an existing category or type a new one…" maxLength={80} required />
+                    <datalist id="ebook-category-options">
+                      {existingCategories.map(category => <option key={category} value={category} />)}
+                    </datalist>
                   </Field>
                   <Field label="Access type">
                     <select value={type} onChange={e => setType(e.target.value)}>
@@ -1156,7 +1171,16 @@ function AdminPanel() {
             <div className="admin-card">
               <SectionHeading eyebrow="PUBLISHING GATE" title="Books awaiting review" subtitle="Only the main administrator can publish sub-admin submissions." />
               {books.filter(book=>book.status==="PENDING_REVIEW").length ? books.filter(book=>book.status==="PENDING_REVIEW").map(book=><article key={book.id} style={{borderBottom:"1px solid var(--border,#ddd)",padding:"16px 0"}}>
-                <h3>{book.title}</h3><p>{book.author || "Unknown author"} · {book.category || "Uncategorized"} · {book.type==="FREE"?"Free":formatMoney(book.price)}</p>
+                <h3>{book.title}</h3><p>{book.author || "Unknown author"} · {book.type==="FREE"?"Free":formatMoney(book.price)}</p>
+                <label style={{display:"grid",gap:6,margin:"12px 0"}}>
+                  <strong>Choose category before publishing *</strong>
+                  <select required value={reviewCategories[book.id] || ""} onChange={e=>setReviewCategories(v=>({...v,[book.id]:e.target.value}))}>
+                    <option value="">Select a category…</option>
+                    {existingCategories.map(category=><option key={category} value={category}>{category}</option>)}
+                    <option value="__new__">+ Add a new category</option>
+                  </select>
+                </label>
+                {reviewCategories[book.id] === "__new__" && <input aria-label={"New category for " + book.title} placeholder="Enter new category name" maxLength={80} value={reviewNewCategories[book.id] || ""} onChange={e=>setReviewNewCategories(v=>({...v,[book.id]:e.target.value}))} required />}
                 <textarea placeholder="Review note (required for rejection)" value={reviewNotes[book.id]||""} onChange={e=>setReviewNotes(v=>({...v,[book.id]:e.target.value}))} rows={2} />
                 <div style={{display:"flex",gap:8,marginTop:8}}><button className="admin-primary" disabled={staffBusy} onClick={()=>reviewBook(book,"APPROVE")}>Approve & publish</button><button className="admin-secondary" disabled={staffBusy} onClick={()=>reviewBook(book,"REJECT")}>Reject</button></div>
               </article>) : <p>No books are awaiting review.</p>}
