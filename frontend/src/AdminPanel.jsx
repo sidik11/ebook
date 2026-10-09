@@ -32,7 +32,7 @@ import {
   TrendingUp,
   MessageSquare,
 } from "lucide-react";
-import { api, useAuth } from "./main";
+import { api, useAuth, compressCoverImage } from "./main";
 
 const NAV = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard },
@@ -439,8 +439,12 @@ function AdminPanel() {
       if (!cover || !file) throw new Error("Select both a cover image and the PDF before publishing.");
       if (file.type !== "application/pdf") throw new Error("The ebook file must be a PDF.");
       if (!["image/jpeg", "image/png", "image/webp"].includes(cover.type)) throw new Error("Cover must be JPG, PNG, or WEBP.");
-
-      const coverPath = await uploadDirect(cover, "cover", "Cover image");
+      if (cover.size > 5 * 1024 * 1024) throw new Error("Cover image must be 5 MB or smaller before compression.");
+      updateUploadState("cover", { status: "compressing", progress: 0, message: "Compressing cover to WebP..." });
+      const coverResult = await compressCoverImage(cover);
+      const coverFile = coverResult.file;
+      updateUploadState("cover", { status: "preparing", progress: 0, message: coverResult.wasCompressed ? `Compressed ${(coverResult.originalSize / 1024).toFixed(0)} KB → ${(coverResult.compressedSize / 1024).toFixed(0)} KB (WebP).` : "Cover already optimized." });
+      const coverPath = await uploadDirect(coverFile, "cover", "Cover image");
       uploadedPaths.push(coverPath);
 
       const storagePath = await uploadDirect(file, "pdf", "PDF document");
