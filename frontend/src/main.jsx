@@ -3,6 +3,76 @@ import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mj
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const COVER_INPUT_MAX_BYTES = 5 * 1024 * 1024;
+const COVER_OUTPUT_MAX_BYTES = 350 * 1024;
+
+export async function compressCoverImage(file) {
+  if (!file || !/^image\/(jpeg|png|webp)$/i.test(file.type)) {
+    throw new Error("Choose a JPG, PNG, or WEBP cover image.");
+  }
+  if (file.size > COVER_INPUT_MAX_BYTES) {
+    throw new Error("Cover image must be 5 MB or smaller before compression.");
+  }
+
+  let bitmap;
+  let sourceUrl = "";
+  try {
+    if (typeof createImageBitmap === "function") {
+      bitmap = await createImageBitmap(file);
+    } else {
+      sourceUrl = URL.createObjectURL(file);
+      const image = new Image();
+      image.src = sourceUrl;
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error("Could not read this cover image."));
+      });
+      bitmap = image;
+    }
+
+    const maxWidth = 700;
+    const maxHeight = 1000;
+    const scale = Math.min(1, maxWidth / bitmap.width, maxHeight / bitmap.height);
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("Your browser cannot compress this image.");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(bitmap, 0, 0, width, height);
+
+    let blob = await new Promise(resolve => canvas.toBlob(resolve, "image/webp", 0.84));
+    if (!blob) throw new Error("Could not convert the cover to WebP.");
+    for (const quality of [0.76, 0.68, 0.58, 0.48]) {
+      if (blob.size <= COVER_OUTPUT_MAX_BYTES) break;
+      const next = await new Promise(resolve => canvas.toBlob(resolve, "image/webp", quality));
+      if (!next) break;
+      blob = next;
+    }
+    if (blob.size > COVER_OUTPUT_MAX_BYTES) {
+      throw new Error("This cover cannot be compressed below 350 KB. Choose a simpler or smaller image.");
+    }
+
+    const baseName = String(file.name || "cover").replace(/\.[^.]+$/, "") || "cover";
+    const optimized = new File([blob], baseName + ".webp", { type: "image/webp", lastModified: Date.now() });
+    return {
+      file: optimized,
+      originalSize: file.size,
+      compressedSize: optimized.size,
+      wasCompressed: file.type !== "image/webp" || file.size !== optimized.size || width !== bitmap.width || height !== bitmap.height,
+      width,
+      height
+    };
+  } finally {
+    if (bitmap && typeof bitmap.close === "function") bitmap.close();
+    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+  }
+}
+
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams, useLocation } from "react-router-dom";
 import "./styles.css";
