@@ -1443,6 +1443,9 @@ router.post("/admin/complaints/:id/refund", async (req, res) => {
     const razorpay = getRazorpay();
     const payment = await razorpay.payments.fetch(paymentId);
     if (!payment || payment.status !== "captured" || payment.captured !== true) return res.status(409).json({ error: "Payment is not captured. No refund was issued." });
+    if (complaint.orderId && String(payment.order_id || "") !== String(complaint.orderId)) return res.status(409).json({ error: "The verified payment does not match the order ID recorded on this complaint." });
+    const linkedOrder = payment.order_id ? await get("orders/" + key(payment.order_id)) : null;
+    if (linkedOrder?.userId && complaint.userId && String(linkedOrder.userId) !== String(complaint.userId)) return res.status(409).json({ error: "The payment owner does not match the customer who submitted this complaint." });
     const requestedAmount = req.body?.amountPaise == null ? Number(payment.amount) - Number(payment.amount_refunded || 0) : Number(req.body.amountPaise);
     if (!Number.isInteger(requestedAmount) || requestedAmount <= 0 || requestedAmount > Number(payment.amount) - Number(payment.amount_refunded || 0)) return res.status(400).json({ error: "Refund amount is invalid or exceeds the remaining captured amount." });
     const db = requireDb();
