@@ -39,7 +39,6 @@ export default function SAdmin() {
   const [notice, setNotice] = useState("");
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
-  const [category, setCategory] = useState("");
   const [description, setDescription] = useState("");
   const [type, setType] = useState("PAID");
   const [price, setPrice] = useState("49");
@@ -81,9 +80,9 @@ export default function SAdmin() {
       const coverPath=await upload(coverFile,"Cover","cover");
       const storagePath=await upload(pdf,"PDF","pdf");
       setUploadProgress(current=>({...current,stage:"Submitting book details"}));
-      await api("/api/sadmin/books",{method:"POST",body:JSON.stringify({title,author,category,description,type,price:type==="FREE"?0:Number(price),coverPath,storagePath,storageProvider:"r2"})});
+      await api("/api/sadmin/books",{method:"POST",body:JSON.stringify({title,author,description,type,price:type==="FREE"?0:Number(price),coverPath,storagePath,storageProvider:"r2"})});
       setNotice("Book submitted for main-admin review. It is not public yet.");
-      setTitle("");setAuthor("");setCategory("");setDescription("");setType("PAID");setPrice("49");setCover(null);setPdf(null);
+      setTitle("");setAuthor("");setDescription("");setType("PAID");setPrice("49");setCover(null);setPdf(null);
       e.target.reset(); await load();
     } catch(err) { setError(err.message || "Could not submit book."); } finally { setBusy(false); setUploadProgress(current=>({...current,stage:""})); }
   }
@@ -101,7 +100,6 @@ export default function SAdmin() {
         <div className="sadmin-fields-grid">
           <label className="sadmin-field"><span>Book title *</span><input placeholder="e.g. Database Management System" value={title} onChange={e=>setTitle(e.target.value)} maxLength={200} required/></label>
           <label className="sadmin-field"><span>Author</span><input placeholder="Author name" value={author} onChange={e=>setAuthor(e.target.value)} maxLength={120}/></label>
-          <label className="sadmin-field"><span>Category</span><input placeholder="Technology, Engineering..." value={category} onChange={e=>setCategory(e.target.value)} maxLength={80}/></label>
           <label className="sadmin-field"><span>Access type</span><select value={type} onChange={e=>setType(e.target.value)}><option value="PAID">Paid ebook</option><option value="FREE">Free ebook</option></select></label>
           {type==="PAID" && <label className="sadmin-field sadmin-full"><span>Price (INR) · required</span><input type="number" min="1" max="100000" step="1" placeholder="49" value={price} onChange={e=>setPrice(e.target.value)} required/></label>}
           <label className="sadmin-field sadmin-full"><span>Description</span><textarea placeholder="Explain what the reader will learn or get from this ebook." value={description} onChange={e=>setDescription(e.target.value)} maxLength={5000} rows={5}/></label>
