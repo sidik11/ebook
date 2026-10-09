@@ -110,7 +110,7 @@ export default function SAdmin() {
         <div className="sadmin-subheading">Protected files</div>
         <div className="sadmin-file-grid">
           <label className={"sadmin-file-card "+(cover?"has-file":"")}>
-            <input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setCover(e.target.files?.[0]||null)} required/>
+            <input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>{const selected=e.target.files?.[0]||null;if(selected&&selected.size>5*1024*1024){setError("Cover image must be 5 MB or smaller before compression.");e.target.value="";setCover(null);return;}setError("");setCover(selected);}} required/>
             <span className="sadmin-file-icon"><BookOpen size={26}/></span>
             <span className="sadmin-file-copy"><strong>Cover image</strong><small>{cover?cover.name:"JPG, PNG or WEBP · max 5 MB (auto-compressed)"}</small>{cover&&<small>{(cover.size/1024/1024).toFixed(2)} MB selected</small>}</span>
             {cover?<CheckCircle2 className="sadmin-file-arrow" size={20}/>:<ChevronRight className="sadmin-file-arrow" size={20}/>}
