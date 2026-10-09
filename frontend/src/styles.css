@@ -466,3 +466,40 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .reader.protected-reader .reader-controls span{min-width:42px}
   .reader.protected-reader .canvas-reader{padding:10px 7px 30px;gap:12px}
 }
+
+
+/* Refund policy and customer payment support */
+.site-footer{display:flex;flex-direction:column;align-items:center;gap:8px;padding:28px 16px 32px}
+.site-footer p{margin:0}
+.site-footer nav{display:flex;justify-content:center;align-items:center;gap:12px 18px;flex-wrap:wrap}
+.site-footer nav a{font-size:12px;color:#a8b2c8}
+.site-footer nav a:hover,.policy-page a:hover,.support-page a:hover{color:#c9bdff;text-decoration:underline}
+.purchase-help{max-width:620px;margin-top:16px!important;color:#9ba7bf!important;font-size:12px!important;line-height:1.75!important}
+.purchase-help a,.policy-page a,.support-page a,.support-success a{color:#b9aaff;text-decoration:underline;text-underline-offset:3px}
+.policy-page{max-width:920px}
+.policy-page>h1{margin-top:10px}
+.policy-updated{margin-top:-10px;color:#78849b;font-size:13px}
+.policy-card{margin:18px 0;padding:22px 24px;border:1px solid #29334b;border-radius:16px;background:linear-gradient(145deg,rgba(17,24,39,.92),rgba(10,14,24,.94))}
+.policy-card h2{margin:0 0 10px;font-size:19px;color:#f0edff}
+.policy-card p{color:#aeb8cd;line-height:1.8}
+.policy-card .primary{display:inline-block;margin-top:6px;text-decoration:none;color:#fff}
+.policy-footnote{font-size:12px;color:#78849b;line-height:1.7;margin-top:24px}
+.support-page{min-height:calc(100vh - 180px);padding:45px 16px}
+.support-page form{width:min(600px,100%);gap:13px}
+.support-page form h1{margin:0;font-size:32px}
+.support-intro{margin:0 0 5px;color:#9ca8bf;font-size:13px;line-height:1.7}
+.support-label{display:grid;gap:7px;color:#cdd4e5;font-size:13px;font-weight:800}
+.support-label input,.support-label select,.support-label textarea{width:100%;padding:12px 13px;border:1px solid #30384d;border-radius:10px;background:#080d16;color:#f4f6ff;font:inherit;font-weight:500}
+.support-label textarea{resize:vertical;min-height:115px}
+.support-label input:focus,.support-label select:focus,.support-label textarea:focus{outline:2px solid rgba(139,108,255,.55);outline-offset:1px}
+.support-contact{margin:2px 0 0!important;color:#8793aa;font-size:12px;line-height:1.7}
+.support-success{width:min(620px,100%);padding:30px;border:1px solid #303853;border-radius:20px;background:linear-gradient(145deg,#111829,#0b101b);box-shadow:0 25px 70px rgba(0,0,0,.3)}
+.support-success h1{font-size:clamp(26px,5vw,38px);line-height:1.15}
+.support-success p{color:#aeb8cd;line-height:1.7}
+.complaint-id{display:inline-block;margin:4px 0 12px;padding:10px 13px;border:1px solid #42366f;border-radius:10px;background:#17132b;color:#d5caff;overflow-wrap:anywhere}
+@media(max-width:600px){
+  .site-footer nav{gap:10px 13px}
+  .policy-card{padding:17px}
+  .support-success{padding:22px}
+  .support-page form h1{font-size:28px}
+}
