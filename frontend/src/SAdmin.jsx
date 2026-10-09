@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, useAuth } from "./main";
+import { api, useAuth, compressCoverImage } from "./main";
 import { BookOpen, FileText, ChevronRight, CheckCircle2, UploadCloud } from "lucide-react";
 
 export function SAdminLogin() {
@@ -71,9 +71,14 @@ export default function SAdmin() {
     e.preventDefault(); setError(""); setNotice("");
     if(!cover || !pdf) return setError("Choose both a cover image and a PDF.");
     if(pdf.type!=="application/pdf" || !["image/jpeg","image/png","image/webp"].includes(cover.type)) return setError("Use a PDF file and JPG, PNG, or WEBP cover.");
-    setBusy(true); setUploadProgress({cover:0,pdf:0,stage:"Preparing upload"});
+    if(cover.size>5*1024*1024) return setError("Cover image must be 5 MB or smaller before compression.");
+    setBusy(true); setUploadProgress({cover:0,pdf:0,stage:"Compressing cover image"});
     try {
-      const coverPath=await upload(cover,"Cover","cover");
+      const coverResult=await compressCoverImage(cover);
+      const coverFile=coverResult.file;
+      setCover(coverFile);
+      setNotice(coverResult.wasCompressed ? "Cover optimized: "+(coverResult.originalSize/1024).toFixed(0)+" KB → "+(coverResult.compressedSize/1024).toFixed(0)+" KB (WebP)." : "Cover is already optimized.");
+      const coverPath=await upload(coverFile,"Cover","cover");
       const storagePath=await upload(pdf,"PDF","pdf");
       setUploadProgress(current=>({...current,stage:"Submitting book details"}));
       await api("/api/sadmin/books",{method:"POST",body:JSON.stringify({title,author,category,description,type,price:type==="FREE"?0:Number(price),coverPath,storagePath,storageProvider:"r2"})});
@@ -107,7 +112,7 @@ export default function SAdmin() {
           <label className={"sadmin-file-card "+(cover?"has-file":"")}>
             <input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setCover(e.target.files?.[0]||null)} required/>
             <span className="sadmin-file-icon"><BookOpen size={26}/></span>
-            <span className="sadmin-file-copy"><strong>Cover image</strong><small>{cover?cover.name:"JPG, PNG or WEBP · max 10 MB"}</small>{cover&&<small>{(cover.size/1024/1024).toFixed(2)} MB selected</small>}</span>
+            <span className="sadmin-file-copy"><strong>Cover image</strong><small>{cover?cover.name:"JPG, PNG or WEBP · max 5 MB (auto-compressed)"}</small>{cover&&<small>{(cover.size/1024/1024).toFixed(2)} MB selected</small>}</span>
             {cover?<CheckCircle2 className="sadmin-file-arrow" size={20}/>:<ChevronRight className="sadmin-file-arrow" size={20}/>}
           </label>
           <label className={"sadmin-file-card "+(pdf?"has-file":"")}>
