@@ -111,8 +111,14 @@ function Layout({ children }) {
       )}
       {children}
       {!isAdminArea && !isReaderPage && (
-        <footer>
+        <footer className="site-footer">
           <p>© {new Date().getFullYear()} MS Tech EBook. All rights reserved.</p>
+          <nav aria-label="Customer support">
+            <Link to="/refund-policy">Refund Policy</Link>
+            <Link to="/support">Raise a Complaint</Link>
+            <a href="mailto:msinnovatex@gmail.com">msinnovatex@gmail.com</a>
+            <a href="mailto:Info@msinnovatex.com">Info@msinnovatex.com</a>
+          </nav>
         </footer>
       )}
     </>
@@ -676,16 +682,20 @@ function Detail() {
         prefill: { email: user.email, name: user.name },
         handler: async response => {
           try {
-            await api("/api/orders/verify", {
+            const verified = await api("/api/orders/verify", {
               method: "POST",
               body: JSON.stringify({
                 bookId: id,
                 ...response
               })
             });
+            if (verified.duplicateCaptured) {
+              navigate(`/support?category=DUPLICATE_CHARGE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(response.razorpay_order_id)}&paymentId=${encodeURIComponent(response.razorpay_payment_id)}`);
+              return;
+            }
             navigate("/library");
           } catch (verifyErr) {
-            alert(`Payment verification error: ${verifyErr.message}`);
+            navigate(`/support?category=BOOK_NOT_UNLOCKED&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(response.razorpay_order_id || orderData.order_id)}&paymentId=${encodeURIComponent(response.razorpay_payment_id || "")}`);
           }
         },
         theme: { color: "#7c5cff" }
@@ -693,7 +703,8 @@ function Detail() {
 
       const rzp = new window.Razorpay(options);
       rzp.on("payment.failed", resp => {
-        alert(`Payment failed: ${resp.error?.description || "Unknown error"}`);
+        const metadata = resp.error?.metadata || {};
+        navigate(`/support?category=PAYMENT_ISSUE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(metadata.order_id || orderData.order_id)}&paymentId=${encodeURIComponent(metadata.payment_id || "")}`);
       });
       rzp.open();
     } catch (err) {
@@ -730,11 +741,136 @@ function Detail() {
         {canRead ? (
           <Link className="primary" to={`/read/${id}`}>Read Now</Link>
         ) : (
-          <button className="primary" onClick={handleBuy} disabled={buying}>
-            {buying ? "Initiating..." : `Buy for ₹${Number(book.price || 0)}`}
-          </button>
+          <>
+            <button className="primary" onClick={handleBuy} disabled={buying}>
+              {buying ? "Initiating..." : `Buy for ₹${Number(book.price || 0)}`}
+            </button>
+            <p className="purchase-help">
+              Digital purchases are non-refundable after the book is successfully unlocked. If your payment is captured but the book stays locked, <Link to={`/support?category=BOOK_NOT_UNLOCKED&bookId=${encodeURIComponent(id)}`}>raise a payment complaint</Link>.
+              <br /><Link to="/refund-policy">Read our Refund Policy</Link>
+            </p>
+          </>
         )}
       </div>
+    </main>
+  );
+}
+
+function RefundPolicy() {
+  return (
+    <main className="container policy-page">
+      <span className="auth-kicker">CUSTOMER POLICY</span>
+      <h1>Refund & Cancellation Policy</h1>
+      <p className="policy-updated">MS Tech EBook · Digital products</p>
+      <section className="policy-card">
+        <h2>1. Digital purchases</h2>
+        <p>Because ebooks are digital products, an order is generally non-refundable once the purchased book has been successfully unlocked and made available in your account, except where a refund is required by applicable law.</p>
+      </section>
+      <section className="policy-card">
+        <h2>2. Payment completed, book still locked</h2>
+        <p>If Razorpay confirms that your payment was captured but the book does not appear in <strong>My Library</strong> or remains locked, do not pay again immediately. Refresh My Library and sign in to the same account used for checkout. If access is still missing after 15 minutes, submit a complaint and include your Razorpay order ID and payment ID where available.</p>
+        <p>We will review the transaction and either restore access or assess the case for a refund. A refund is not automatic; the payment status must be verified first.</p>
+        <Link className="primary" to="/support?category=BOOK_NOT_UNLOCKED">Report a locked book</Link>
+      </section>
+      <section className="policy-card">
+        <h2>3. Duplicate charges or failed orders</h2>
+        <p>If you were charged more than once for the same book, or your payment was captured but checkout failed, submit a complaint. We will verify the payment records and review any extra captured charge for refund. Keep your transaction details until the case is resolved.</p>
+        <Link to="/support?category=DUPLICATE_CHARGE">Report a duplicate charge</Link>
+      </section>
+      <section className="policy-card">
+        <h2>4. How to contact us</h2>
+        <p>Use the complaint form for a traceable case, or contact our support team by email.</p>
+        <p><strong>Email:</strong> <a href="mailto:msinnovatex@gmail.com">msinnovatex@gmail.com</a></p>
+        <p><strong>Additional contact:</strong> <a href="mailto:Info@msinnovatex.com">Info@msinnovatex.com</a></p>
+        <Link to="/support">Raise a Complaint</Link>
+      </section>
+      <p className="policy-footnote">Nothing in this policy limits any consumer rights that cannot legally be excluded under applicable law.</p>
+    </main>
+  );
+}
+
+function SupportComplaint() {
+  const params = new URLSearchParams(window.location.search);
+  const { user } = useAuth();
+  const [category, setCategory] = useState(params.get("category") || "BOOK_NOT_UNLOCKED");
+  const [bookId, setBookId] = useState(params.get("bookId") || "");
+  const [orderId, setOrderId] = useState(params.get("orderId") || "");
+  const [paymentId, setPaymentId] = useState(params.get("paymentId") || "");
+  const [message, setMessage] = useState("");
+  const [complaintId, setComplaintId] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    if (!user) {
+      navigate("/login?next=" + encodeURIComponent(window.location.pathname + window.location.search));
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api("/api/support/complaints", {
+        method: "POST",
+        body: JSON.stringify({ category, bookId, orderId, paymentId, message })
+      });
+      setComplaintId(result.complaintId);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (complaintId) {
+    return (
+      <main className="auth">
+        <section className="support-success">
+          <span className="auth-kicker">COMPLAINT RECEIVED</span>
+          <h1>We have received your request.</h1>
+          <p>Your complaint ID is:</p>
+          <strong className="complaint-id">{complaintId}</strong>
+          <p>Keep this ID for follow-up. Our team will verify the transaction and review access restoration or refund eligibility.</p>
+          <p><a href="mailto:msinnovatex@gmail.com">msinnovatex@gmail.com</a> · <a href="mailto:Info@msinnovatex.com">Info@msinnovatex.com</a></p>
+          <Link className="primary" to="/library">Check My Library</Link>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="auth support-page">
+      <form onSubmit={submit}>
+        <span className="auth-kicker">CUSTOMER SUPPORT</span>
+        <h1>Raise a Complaint</h1>
+        <p className="support-intro">Use this form if you were charged but cannot open your ebook, were charged twice, or need help with a payment.</p>
+        {!user && <p className="error">Please sign in with the account used for the purchase before submitting a complaint.</p>}
+        <label className="support-label">Complaint type
+          <select value={category} onChange={e => setCategory(e.target.value)} required>
+            <option value="BOOK_NOT_UNLOCKED">Payment done, book not unlocked</option>
+            <option value="DUPLICATE_CHARGE">Duplicate payment / extra charge</option>
+            <option value="PAYMENT_ISSUE">Payment or checkout issue</option>
+            <option value="OTHER">Other issue</option>
+          </select>
+        </label>
+        <label className="support-label">Book ID (if known)
+          <input value={bookId} onChange={e => setBookId(e.target.value)} placeholder="Book ID" maxLength={120} />
+        </label>
+        <label className="support-label">Razorpay Order ID (if available)
+          <input value={orderId} onChange={e => setOrderId(e.target.value)} placeholder="order_..." maxLength={100} />
+        </label>
+        <label className="support-label">Razorpay Payment ID (if available)
+          <input value={paymentId} onChange={e => setPaymentId(e.target.value)} placeholder="pay_..." maxLength={100} />
+        </label>
+        <label className="support-label">What happened?
+          <textarea value={message} onChange={e => setMessage(e.target.value)} minLength={10} maxLength={2000} rows={5} placeholder="Describe the issue and the approximate payment time. Do not include card details, passwords, or OTPs." required />
+        </label>
+        {error && <p className="error">{error}</p>}
+        <button className="primary" disabled={busy}>{busy ? "Submitting..." : "Submit Complaint"}</button>
+        <p className="support-contact">You can also email <a href="mailto:msinnovatex@gmail.com">msinnovatex@gmail.com</a> or <a href="mailto:Info@msinnovatex.com">Info@msinnovatex.com</a>.</p>
+        <p className="support-contact"><Link to="/refund-policy">Read the Refund Policy</Link></p>
+      </form>
     </main>
   );
 }
@@ -1088,6 +1224,8 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/books" element={<Books />} />
           <Route path="/books/:id" element={<Detail />} />
+          <Route path="/refund-policy" element={<RefundPolicy />} />
+          <Route path="/support" element={portalUser ? <SupportComplaint /> : <SupportComplaint />} />
           <Route path="/login" element={<AuthForm />} />
           <Route path="/register" element={<AuthForm register />} />
           <Route path="/change-password" element={portalUser ? <ChangePassword /> : <Navigate to="/login" replace />} />
