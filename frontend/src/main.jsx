@@ -77,6 +77,7 @@ function Layout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isAdminArea = location.pathname.startsWith("/admin") || new URLSearchParams(location.search).get("portal") === "admin";
+  const isReaderPage = location.pathname.startsWith("/read/");
 
   async function handleLogout() {
     try {
@@ -768,6 +769,102 @@ function Library() {
   );
 }
 
+function ProtectedPdfPage({ pdfDoc, pageNumber, scale, totalPages, scrollRootRef, registerPage, onActivePage, onRenderError }) {
+  const sectionRef = useRef(null);
+  const canvasRef = useRef(null);
+  const pdfPageRef = useRef(null);
+  const activeCallbackRef = useRef(onActivePage);
+  const errorCallbackRef = useRef(onRenderError);
+  const [visible, setVisible] = useState(false);
+  const [geometry, setGeometry] = useState(null);
+
+  useEffect(() => { activeCallbackRef.current = onActivePage; }, [onActivePage]);
+  useEffect(() => { errorCallbackRef.current = onRenderError; }, [onRenderError]);
+
+  useEffect(() => {
+    let active = true;
+    pdfDoc.getPage(pageNumber).then(page => {
+      if (!active) return;
+      pdfPageRef.current = page;
+      const viewport = page.getViewport({ scale });
+      setGeometry({ width: viewport.width, height: viewport.height });
+    }).catch(error => {
+      if (active) errorCallbackRef.current?.(error?.message || "Unable to prepare PDF page.");
+    });
+    return () => {
+      active = false;
+      pdfPageRef.current = null;
+    };
+  }, [pdfDoc, pageNumber, scale]);
+
+  useEffect(() => {
+    const element = sectionRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        setVisible(true);
+        const root = entry.rootBounds;
+        if (root) {
+          const focusLine = root.top + root.height * 0.42;
+          const box = entry.boundingClientRect;
+          const nearFocus = box.top <= focusLine && box.bottom >= focusLine;
+          if (entry.intersectionRatio >= 0.12 || nearFocus) {
+            activeCallbackRef.current?.(pageNumber);
+          }
+        }
+      }
+    }, {
+      root: scrollRootRef.current,
+      rootMargin: "850px 0px",
+      threshold: [0, 0.12, 0.3, 0.6]
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [pageNumber, scrollRootRef]);
+
+  useEffect(() => {
+    const page = pdfPageRef.current;
+    const canvas = canvasRef.current;
+    if (!visible || !page || !canvas || !geometry) return undefined;
+
+    let active = true;
+    const viewport = page.getViewport({ scale });
+    const context = canvas.getContext("2d", { alpha: false });
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const renderTask = page.render({ canvasContext: context, viewport });
+    renderTask.promise.catch(error => {
+      if (active && error?.name !== "RenderingCancelledException") {
+        errorCallbackRef.current?.(error?.message || "Unable to render PDF page.");
+      }
+    });
+    return () => {
+      active = false;
+      try { renderTask.cancel(); } catch {}
+    };
+  }, [visible, geometry, scale, pageNumber]);
+
+  return (
+    <section
+      ref={element => {
+        sectionRef.current = element;
+        registerPage(pageNumber, element);
+      }}
+      className="canvas-page"
+      style={geometry ? { width: Math.min(geometry.width, 960), maxWidth: "100%", aspectRatio: geometry.width + " / " + geometry.height } : { width: "min(100%, 720px)", minHeight: "65vh" }}
+      aria-label={"Page " + pageNumber + " of " + totalPages}
+      onContextMenu={event => event.preventDefault()}
+    >
+      <canvas ref={canvasRef} aria-label={"Protected ebook page " + pageNumber} />
+      <span className="canvas-page-number">{pageNumber}</span>
+    </section>
+  );
+}
+
 function Reader() {
   const { id } = useParams();
   const [url, setUrl] = useState("");
@@ -777,8 +874,9 @@ function Reader() {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pageNumber, setPageNumber] = useState(1);
   const [numPages, setNumPages] = useState(0);
-  const [scale, setScale] = useState(1.2);
-  const canvasRef = useRef(null);
+  const [scale, setScale] = useState(1.0);
+  const canvasReaderRef = useRef(null);
+  const pageRefs = useRef({});
 
   useEffect(() => {
     let active = true;
@@ -795,6 +893,8 @@ function Reader() {
     let loadingTask = null;
     setPdfLoading(true);
     setError("");
+    setPdfDoc(null);
+    setNumPages(0);
     setPageNumber(1);
 
     (async () => {
@@ -809,6 +909,7 @@ function Reader() {
           await document.destroy();
           return;
         }
+        pageRefs.current = {};
         setPdfDoc(document);
         setNumPages(document.numPages);
       } catch (e) {
@@ -825,64 +926,55 @@ function Reader() {
   }, [url]);
 
   useEffect(() => {
-    if (!pdfDoc || !canvasRef.current) return;
-    let active = true;
-    const render = async () => {
-      try {
-        const page = await pdfDoc.getPage(pageNumber);
-        if (!active) return;
-        const viewport = page.getViewport({ scale });
-        const canvas = canvasRef.current;
-        const context = canvas.getContext("2d", { alpha: false });
-        canvas.width = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        await page.render({ canvasContext: context, viewport }).promise;
-      } catch (e) {
-        if (active) setError(e.message || "Unable to render this page.");
-      }
-    };
-    render();
-    return () => { active = false; };
-  }, [pdfDoc, pageNumber, scale]);
-
-  useEffect(() => {
-    const preventAction = e => e.preventDefault();
-    const preventKeys = e => {
-      const key = String(e.key || "").toLowerCase();
+    const preventAction = event => event.preventDefault();
+    const preventKeys = event => {
+      const key = String(event.key || "").toLowerCase();
       if (
-        ((e.ctrlKey || e.metaKey) && ["c", "x", "s", "p", "u", "a"].includes(key)) ||
-        ((e.ctrlKey || e.metaKey) && e.shiftKey && ["i", "j", "c"].includes(key)) ||
+        ((event.ctrlKey || event.metaKey) && ["c", "x", "s", "p", "u", "a"].includes(key)) ||
+        ((event.ctrlKey || event.metaKey) && event.shiftKey && ["i", "j", "c"].includes(key)) ||
         key === "f12"
       ) {
-        e.preventDefault();
-        e.stopPropagation();
+        event.preventDefault();
+        event.stopPropagation();
       }
     };
     const blockEvents = ["contextmenu", "copy", "cut", "selectstart", "dragstart"];
-    blockEvents.forEach(ev => document.addEventListener(ev, preventAction, true));
+    blockEvents.forEach(name => document.addEventListener(name, preventAction, true));
     document.addEventListener("keydown", preventKeys, true);
     document.documentElement.classList.add("protected-reader-active");
     return () => {
-      blockEvents.forEach(ev => document.removeEventListener(ev, preventAction, true));
+      blockEvents.forEach(name => document.removeEventListener(name, preventAction, true));
       document.removeEventListener("keydown", preventKeys, true);
       document.documentElement.classList.remove("protected-reader-active");
       try { pdfDoc?.destroy(); } catch {}
     };
   }, [pdfDoc]);
 
+  const registerPage = (number, element) => {
+    if (element) pageRefs.current[number] = element;
+    else delete pageRefs.current[number];
+  };
+  const onActivePage = number => setPageNumber(previous => previous === number ? previous : number);
+  const reportRenderError = message => setError(message);
+  const goToPage = number => {
+    const next = Math.max(1, Math.min(numPages || 1, number));
+    setPageNumber(next);
+    pageRefs.current[next]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   if (error) return <main className="center error"><p>{error}</p></main>;
 
   return (
-    <main className="reader protected-reader" onContextMenu={e => e.preventDefault()}>
+    <main className="reader protected-reader" onContextMenu={event => event.preventDefault()}>
       <div className="readerbar">
         <span>Protected Reader · Copy Disabled</span>
         <div className="reader-controls">
-          <button type="button" onClick={() => setScale(v => Math.max(.75, Number((v - .1).toFixed(1))))}>−</button>
+          <button type="button" aria-label="Zoom out" onClick={() => setScale(value => Math.max(.65, Number((value - .1).toFixed(1))))}>−</button>
           <span>{Math.round(scale * 100)}%</span>
-          <button type="button" onClick={() => setScale(v => Math.min(2.2, Number((v + .1).toFixed(1))))}>+</button>
-          <button type="button" disabled={pageNumber <= 1} onClick={() => setPageNumber(v => Math.max(1, v - 1))}>‹</button>
+          <button type="button" aria-label="Zoom in" onClick={() => setScale(value => Math.min(2.2, Number((value + .1).toFixed(1))))}>+</button>
+          <button type="button" aria-label="Previous page" disabled={pageNumber <= 1} onClick={() => goToPage(pageNumber - 1)}>‹</button>
           <span>{numPages ? `${pageNumber} / ${numPages}` : "—"}</span>
-          <button type="button" disabled={!numPages || pageNumber >= numPages} onClick={() => setPageNumber(v => Math.min(numPages, v + 1))}>›</button>
+          <button type="button" aria-label="Next page" disabled={!numPages || pageNumber >= numPages} onClick={() => goToPage(pageNumber + 1)}>›</button>
           <Link to="/library">Back to Library</Link>
         </div>
       </div>
@@ -890,10 +982,20 @@ function Reader() {
       {loading || pdfLoading ? (
         <div className="center"><div className="reader-loading"><span className="reader-spinner" />Preparing protected pages…</div></div>
       ) : pdfDoc ? (
-        <div className="canvas-reader" onContextMenu={e => e.preventDefault()}>
-          <div className="canvas-page" onContextMenu={e => e.preventDefault()}>
-            <canvas ref={canvasRef} aria-label={`Protected ebook page ${pageNumber}`} />
-          </div>
+        <div className="canvas-reader" ref={canvasReaderRef} onContextMenu={event => event.preventDefault()}>
+          {Array.from({ length: numPages }, (_, index) => (
+            <ProtectedPdfPage
+              key={id + "-" + (index + 1)}
+              pdfDoc={pdfDoc}
+              pageNumber={index + 1}
+              totalPages={numPages}
+              scale={scale}
+              scrollRootRef={canvasReaderRef}
+              registerPage={registerPage}
+              onActivePage={onActivePage}
+              onRenderError={reportRenderError}
+            />
+          ))}
         </div>
       ) : (
         <div className="center error"><p>Could not load the ebook file.</p></div>
