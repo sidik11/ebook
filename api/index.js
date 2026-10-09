@@ -1430,6 +1430,42 @@ router.get("/admin/complaints", async (req, res) => {
   }
 });
 
+router.post("/admin/complaints/:id/refund", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const complaintId = key(req.params.id);
+    const complaint = await get("supportComplaints/" + complaintId);
+    if (!complaint) return res.status(404).json({ error: "Complaint not found" });
+    if (complaint.refund?.id || complaint.refund?.status === "PROCESSING") return res.status(409).json({ error: "A refund has already been initiated for this complaint." });
+    const paymentId = safeText(complaint.paymentId || req.body?.paymentId, 100);
+    if (!/^pay_[A-Za-z0-9]+$/.test(paymentId)) return res.status(400).json({ error: "A valid Razorpay payment ID is required. Verify the complaint details first." });
+    const razorpay = getRazorpay();
+    const payment = await razorpay.payments.fetch(paymentId);
+    if (!payment || payment.status !== "captured" || payment.captured !== true) return res.status(409).json({ error: "Payment is not captured. No refund was issued." });
+    const requestedAmount = req.body?.amountPaise == null ? Number(payment.amount) - Number(payment.amount_refunded || 0) : Number(req.body.amountPaise);
+    if (!Number.isInteger(requestedAmount) || requestedAmount <= 0 || requestedAmount > Number(payment.amount) - Number(payment.amount_refunded || 0)) return res.status(400).json({ error: "Refund amount is invalid or exceeds the remaining captured amount." });
+    const db = requireDb();
+    const lockRef = db.ref("supportComplaints/" + complaintId + "/refund");
+    const lock = await lockRef.transaction(current => {
+      if (current && ["PROCESSING", "SUBMITTED", "PROCESSED"].includes(String(current.status || ""))) return;
+      return { status: "PROCESSING", paymentId, amountPaise: requestedAmount, requestedBy: auth.userId, requestedAt: now(), idempotencyKey: hash("complaint-refund:" + complaintId + ":" + paymentId + ":" + requestedAmount) };
+    });
+    if (!lock.committed) return res.status(409).json({ error: "A refund request is already being processed or has been issued." });
+    try {
+      const refund = await razorpay.payments.refund(paymentId, { amount: requestedAmount, speed: "normal", notes: { complaintId, reviewedBy: auth.userId }, receipt: ("complaint_" + complaintId).slice(0, 40) });
+      await update("supportComplaints/" + complaintId, { status: "REFUND_ISSUED", resolutionNote: safeText(req.body?.resolutionNote || "Refund approved by administrator after payment verification.", 1000), updatedAt: now(), updatedBy: auth.user.email, resolvedAt: now(), resolvedBy: auth.user.email, refund: { id: refund.id, paymentId, amountPaise: refund.amount, status: refund.status || "SUBMITTED", requestedAt: now(), requestedBy: auth.userId } });
+      await audit("REFUND_INITIATED_BY_ADMIN", auth, { complaintId, paymentId, refundId: refund.id, amountPaise: refund.amount });
+      return res.json({ ok: true, refund: { id: refund.id, status: refund.status, amountPaise: refund.amount, paymentId } });
+    } catch (refundError) {
+      await update("supportComplaints/" + complaintId, { refund: { status: "FAILED", paymentId, amountPaise: requestedAmount, failedAt: now(), error: safeText(refundError.message, 300), requestedBy: auth.userId } });
+      throw refundError;
+    }
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Refund could not be processed. Verify Razorpay credentials and transaction status." });
+  }
+});
+
 router.patch("/admin/complaints/:id", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
