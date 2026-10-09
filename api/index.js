@@ -1134,13 +1134,17 @@ router.patch("/admin/books/:id/review", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
     const id = key(req.params.id);
-    const book = await get("books/" + id);
-    if (!book || book.status !== "PENDING_REVIEW") return res.status(404).json({ error: "Pending book not found" });
     const decision = safeText(req.body?.decision, 20).toUpperCase();
     const note = safeText(req.body?.note, 1000);
     if (!["APPROVE", "REJECT"].includes(decision)) return res.status(400).json({ error: "Choose approve or reject." });
     if (decision === "REJECT" && note.length < 5) return res.status(400).json({ error: "Add a rejection reason of at least 5 characters." });
-    await update("books/" + id, { status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: now(), reviewedBy: auth.userId, reviewNote: note || null, updatedAt: now() });
+    const db = requireDb();
+    const reviewTime = now();
+    const reviewTx = await db.ref("books/" + id).transaction(current => {
+      if (!current || current.status !== "PENDING_REVIEW") return;
+      return { ...current, status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: reviewTime, reviewedBy: auth.userId, reviewNote: note || null, updatedAt: reviewTime };
+    });
+    if (!reviewTx.committed) return res.status(409).json({ error: "This book is no longer pending review. Refresh the catalogue and check its current status." });
     await audit(decision === "APPROVE" ? "BOOK_APPROVED" : "BOOK_REJECTED", auth, { bookId: id });
     res.json({ ok: true, status: decision === "APPROVE" ? "ACTIVE" : "REJECTED" });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Review action failed" }); }
