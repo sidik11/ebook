@@ -214,6 +214,7 @@ function Grid({ books = [] }) {
           </div>
           <h3>{b.title}</h3>
           <p>{b.author || "MS Tech EBook"}</p>
+          {b.publishedDate && <small className="book-published-date">Published {new Date(b.publishedDate + "T00:00:00").toLocaleDateString()}</small>}
           <strong>{b.type === "FREE" || Number(b.price || 0) === 0 ? "FREE" : "₹" + Number(b.price || 0)}</strong>
         </Link>
       ))}
@@ -822,7 +823,8 @@ function Detail() {
           {book.category || "EBOOK"}
         </small>
         <h1>{book.title}</h1>
-        <p style={{ color: "#8b949e", marginBottom: "16px" }}>By {book.author || "MS Tech EBook"}</p>
+        <p style={{ color: "#8b949e", marginBottom: "8px" }}>By {book.author || "MS Tech EBook"}</p>
+        {book.publishedDate && <p style={{ color: "#8b949e", fontSize: "14px", marginBottom: "16px" }}>Published {new Date(book.publishedDate + "T00:00:00").toLocaleDateString()}</p>}
         <p style={{ whiteSpace: "pre-line" }}>{book.description}</p>
         <h2 style={{ margin: "24px 0" }}>{isFree ? "Free" : `₹${Number(book.price || 0)}`}</h2>
         {canRead ? (
