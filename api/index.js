@@ -1057,7 +1057,7 @@ router.post("/admin/subadmins", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
-    const subAdminId = safeText(req.body?.userId, 64);
+    const subAdminId = safeText(req.body?.userId, 64).toLowerCase();
     const password = req.body?.password;
     const name = safeText(req.body?.name || "Book Uploader", 120);
     if (!validAdminId(subAdminId)) return res.status(400).json({ error: "User ID must be 3-64 characters using letters, numbers, _ or -." });
@@ -1437,7 +1437,7 @@ router.post("/admin/complaints/:id/refund", async (req, res) => {
     const complaintId = key(req.params.id);
     const complaint = await get("supportComplaints/" + complaintId);
     if (!complaint) return res.status(404).json({ error: "Complaint not found" });
-    if (complaint.refund?.id || complaint.refund?.status === "PROCESSING") return res.status(409).json({ error: "A refund has already been initiated for this complaint." });
+    if (complaint.refund && Object.keys(complaint.refund).length) return res.status(409).json({ error: "A refund attempt already exists for this complaint. Reconcile its status in Razorpay before retrying; automatic retries are disabled to prevent duplicate refunds." });
     const paymentId = safeText(complaint.paymentId || req.body?.paymentId, 100);
     if (!/^pay_[A-Za-z0-9]+$/.test(paymentId)) return res.status(400).json({ error: "A valid Razorpay payment ID is required. Verify the complaint details first." });
     const razorpay = getRazorpay();
@@ -1452,16 +1452,19 @@ router.post("/admin/complaints/:id/refund", async (req, res) => {
     const lockRef = db.ref("supportComplaints/" + complaintId + "/refund");
     const lock = await lockRef.transaction(current => {
       if (current && ["PROCESSING", "SUBMITTED", "PROCESSED"].includes(String(current.status || ""))) return;
+      if (current && Object.keys(current).length) return;
       return { status: "PROCESSING", paymentId, amountPaise: requestedAmount, requestedBy: auth.userId, requestedAt: now(), idempotencyKey: hash("complaint-refund:" + complaintId + ":" + paymentId + ":" + requestedAmount) };
     });
     if (!lock.committed) return res.status(409).json({ error: "A refund request is already being processed or has been issued." });
     try {
-      const refund = await razorpay.payments.refund(paymentId, { amount: requestedAmount, speed: "normal", notes: { complaintId, reviewedBy: auth.userId }, receipt: ("complaint_" + complaintId).slice(0, 40) });
+      const refund = await razorpay.payments.refund(paymentId, { amount: requestedAmount, speed: "normal", notes: { complaintId, reviewedBy: auth.userId, refundKey: hash("complaint-refund:" + complaintId + ":" + paymentId + ":" + requestedAmount).slice(0, 40) }, receipt: ("complaint_" + complaintId).slice(0, 40) });
       await update("supportComplaints/" + complaintId, { status: "REFUND_ISSUED", resolutionNote: safeText(req.body?.resolutionNote || "Refund approved by administrator after payment verification.", 1000), updatedAt: now(), updatedBy: auth.user.email, resolvedAt: now(), resolvedBy: auth.user.email, refund: { id: refund.id, paymentId, amountPaise: refund.amount, status: refund.status || "SUBMITTED", requestedAt: now(), requestedBy: auth.userId } });
       await audit("REFUND_INITIATED_BY_ADMIN", auth, { complaintId, paymentId, refundId: refund.id, amountPaise: refund.amount });
       return res.json({ ok: true, refund: { id: refund.id, status: refund.status, amountPaise: refund.amount, paymentId } });
     } catch (refundError) {
-      await update("supportComplaints/" + complaintId, { refund: { status: "FAILED", paymentId, amountPaise: requestedAmount, failedAt: now(), error: safeText(refundError.message, 300), requestedBy: auth.userId } });
+      // Provider outcome may be ambiguous (for example, timeout after acceptance).
+      // Preserve a blocking UNKNOWN state; never permit an automatic second refund.
+      try { await update("supportComplaints/" + complaintId + "/refund", { status: "UNKNOWN", paymentId, amountPaise: requestedAmount, lastCheckedAt: now(), error: safeText(refundError.message, 300), requestedBy: auth.userId }); } catch (persistError) { console.error("CRITICAL: refund state could not be persisted; reconcile Razorpay before retrying", complaintId, persistError.message); }
       throw refundError;
     }
   } catch (e) {
@@ -1600,16 +1603,32 @@ router.post("/orders/create", async (req, res) => {
     const purchase = await owned(auth.userId, bookId);
     if (purchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
 
-    // A per-user/per-book RTDB transaction prevents concurrent tabs from
-    // creating multiple active Razorpay orders for the same ebook.
+    // Recover an unpaid order if the customer closed checkout or the lock expired.
+    // Reusing the same provider order avoids creating a second payable order.
     lockPath = "checkoutLocks/" + purchaseId;
+    const existingLock = await get(lockPath);
+    if (existingLock?.orderId && Number(existingLock.expiresAt || 0) <= now()) {
+      const existingOrder = await get("orders/" + key(existingLock.orderId));
+      if (existingOrder?.status === "CREATED" && existingOrder.userId === auth.userId && existingOrder.bookId === bookId) {
+        const razorpay = getRazorpay();
+        const providerOrder = await razorpay.orders.fetch(existingLock.orderId);
+        if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise)) {
+          await update(lockPath, { status: "CREATED", updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
+          return res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: providerOrder.id, amount: providerOrder.amount, currency: providerOrder.currency, name: "MS Tech EBook", description: book.title, recovered: true });
+        }
+      }
+    }
+
+    // Atomic lock protects against concurrent checkout requests.
     lockToken = randomToken();
     const lockTx = await requireDb().ref(lockPath).transaction(current => {
       if (current && Number(current.expiresAt || 0) > now()) return;
-      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 5 * 60 * 1000 };
+      // A stale lock linked to an unresolved order must be recovered, not replaced.
+      if (current?.orderId && current.status !== "PAID") return;
+      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 30 * 60 * 1000 };
     });
     if (!lockTx.committed) {
-      return res.status(409).json({ error: "A checkout for this ebook is already in progress. Wait a few minutes, then check My Library before trying again." });
+      return res.status(409).json({ error: "An earlier checkout is unresolved. Retry to resume it, or contact support if payment may already have been taken." });
     }
 
     const razorpay = getRazorpay();
@@ -1622,7 +1641,7 @@ router.post("/orders/create", async (req, res) => {
       userId: auth.userId, bookId, amountPaise: order.amount, amount: Number(book.price),
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
-    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 5 * 60 * 1000 });
+    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
     res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title });
   } catch (e) {
     if (lockPath && lockToken) {
