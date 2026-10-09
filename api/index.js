@@ -231,6 +231,13 @@ function safeText(value, max) {
   return String(value ?? "").trim().slice(0, max);
 }
 
+function isValidDateOnly(value) {
+  const dateOnly = safeText(value, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return false;
+  const parsed = new Date(dateOnly + "T00:00:00.000Z");
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === dateOnly;
+}
+
 function key(value) {
   return String(value).replace(/[.#$\\[\\]]/g, "_").slice(0, 768);
 }
@@ -383,6 +390,7 @@ async function publicBook(bookId, data) {
     title: safeText(data?.title, MAX_BOOK_TITLE),
     author: safeText(data?.author, 120),
     category: safeText(data?.category, 80),
+    publishedDate: safeText(data?.publishedDate, 10),
     description: safeText(data?.description, MAX_DESCRIPTION),
     type: normalizedType,
     price: normalizedType === "FREE" ? 0 : rawPrice,
@@ -1207,14 +1215,16 @@ router.patch("/admin/books/:id/review", async (req, res) => {
     const decision = safeText(req.body?.decision, 20).toUpperCase();
     const note = safeText(req.body?.note, 1000);
     const category = safeText(req.body?.category, 80);
+    const publishedDate = safeText(req.body?.publishedDate, 10);
     if (!["APPROVE", "REJECT"].includes(decision)) return res.status(400).json({ error: "Choose approve or reject." });
     if (decision === "APPROVE" && !category) return res.status(400).json({ error: "Choose a category before publishing this book." });
+    if (decision === "APPROVE" && !isValidDateOnly(publishedDate)) return res.status(400).json({ error: "Choose a valid published date before publishing this book." });
     if (decision === "REJECT" && note.length < 5) return res.status(400).json({ error: "Add a rejection reason of at least 5 characters." });
     const db = requireDb();
     const reviewTime = now();
     const reviewTx = await db.ref("books/" + id).transaction(current => {
       if (!current || current.status !== "PENDING_REVIEW") return;
-      return { ...current, ...(decision === "APPROVE" ? { category } : {}), status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: reviewTime, reviewedBy: auth.userId, reviewNote: note || null, updatedAt: reviewTime };
+      return { ...current, ...(decision === "APPROVE" ? { category, publishedDate } : {}), status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: reviewTime, reviewedBy: auth.userId, reviewNote: note || null, updatedAt: reviewTime };
     });
     if (!reviewTx.committed) return res.status(409).json({ error: "This book is no longer pending review. Refresh the catalogue and check its current status." });
     await audit(decision === "APPROVE" ? "BOOK_APPROVED" : "BOOK_REJECTED", auth, { bookId: id });
@@ -1228,6 +1238,8 @@ router.post("/admin/books", async (req, res) => {
     if (!auth || !requireCsrf(req, res, auth)) return;
     const book = normalizeBookInput(req.body || {});
     if (!book.category) fail(400, "Choose or enter a category before publishing.");
+    const publishedDate = safeText(req.body?.publishedDate, 10);
+    if (!isValidDateOnly(publishedDate)) fail(400, "Choose a valid published date before publishing.");
     const r2 = requireR2();
     const [pdfMeta, coverMeta] = await Promise.all([
       r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.storagePath })),
@@ -1239,7 +1251,7 @@ router.post("/admin/books", async (req, res) => {
     if (coverSize <= 0 || coverSize > STORAGE_UPLOADS["image/webp"].max || String(coverMeta.ContentType || "").toLowerCase() !== "image/webp") fail(400, "Cover must be a compressed WebP image under 350 KB.");
     const db = requireDb();
     const id = db.ref("books").push().key;
-    await set("books/" + id, { ...book, status: "ACTIVE", createdAt: now(), updatedAt: now(), createdBy: auth.user.email });
+    await set("books/" + id, { ...book, publishedDate, status: "ACTIVE", createdAt: now(), updatedAt: now(), createdBy: auth.user.email });
     await audit("BOOK_CREATED", auth, { bookId: id });
     res.status(201).json({ ok: true, id });
   } catch (e) {
@@ -1626,12 +1638,18 @@ router.patch("/admin/books/:id", async (req, res) => {
     const type = req.body.type === "FREE" ? "FREE" : req.body.type === "PAID" ? "PAID" : null;
     const status = req.body.status === "DRAFT" ? "DRAFT" : req.body.status === "ACTIVE" ? "ACTIVE" : null;
     const price = type === "FREE" ? 0 : Number(req.body.price);
-    if (!title || !type || !status || (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE))) return res.status(400).json({ error: "Invalid book details" });
-    await update(bookPath, {
+    const changes = {
       title, author: safeText(req.body.author, 120), category: safeText(req.body.category, 80),
       description: safeText(req.body.description, MAX_DESCRIPTION), type, price, status,
       updatedAt: now(), updatedBy: auth.user.email
-    });
+    };
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "publishedDate")) {
+      const publishedDate = safeText(req.body.publishedDate, 10);
+      if (!isValidDateOnly(publishedDate)) return res.status(400).json({ error: "Choose a valid published date." });
+      changes.publishedDate = publishedDate;
+    }
+    if (!title || !type || !status || (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE))) return res.status(400).json({ error: "Invalid book details" });
+    await update(bookPath, changes);
     await audit("BOOK_UPDATED", auth, { bookId: req.params.id });
     res.json({ ok: true });
   } catch (e) {
