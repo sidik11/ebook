@@ -380,14 +380,14 @@ function ChangePassword() {
     if (newPassword !== confirmPassword) return setError("Passwords do not match");
     setBusy(true);
     try {
-      const portalQuery = user?.role === "admin" ? "?portal=admin" : "?portal=user";
+      const portalQuery = user?.role === "admin" ? "?portal=admin" : user?.role === "sadmin" ? "?portal=sadmin" : "?portal=user";
       await api("/api/auth/change-password" + portalQuery, {
         method: "POST",
         body: JSON.stringify({ currentPassword, newPassword })
       });
       setUser({ ...user, mustChangePassword: false });
       setDone(true);
-      setTimeout(() => navigate(user?.role === "admin" ? "/admin" : "/books"), 1000);
+      setTimeout(() => navigate(user?.role === "admin" ? "/admin" : user?.role === "sadmin" ? "/sadmin" : "/books"), 1000);
     } catch (err) {
       setError(err.message);
     } finally {
