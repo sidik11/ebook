@@ -187,7 +187,7 @@ function AdminPanel() {
     const note = String(reviewNotes[book.id] || "").trim();
     const categoryChoice = String(reviewCategories[book.id] || "").trim();
     const category = categoryChoice === "__new__" ? String(reviewNewCategories[book.id] || "").trim() : categoryChoice;
-    const publishedDate = String(reviewPublishedDates[book.id] || "").trim();
+    const publishedDate = String(reviewPublishedDates[book.id] || localDateInput()).trim();
     if (decision === "APPROVE" && !category) { setNotice({type:"error",text:"Choose an existing category or enter a new category before publishing."}); return; }
     if (decision === "APPROVE" && !/^\d{4}-\d{2}-\d{2}$/.test(publishedDate)) { setNotice({type:"error",text:"Choose a valid published date before publishing."}); return; }
     if (decision === "REJECT" && note.length < 5) { setNotice({type:"error",text:"Add a rejection reason of at least 5 characters."}); return; }
