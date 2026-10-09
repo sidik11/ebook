@@ -858,7 +858,7 @@ function AdminPanel() {
 
                 <div className="admin-form-section-title">Protected files</div>
                 <div className="admin-file-grid">
-                  <FileDrop label="Cover image" accept=".jpg,.jpeg,.png,.webp,image/*" file={cover} setFile={setCover} icon={<BookOpen size={22} />} hint="JPG, PNG or WEBP · max 10 MB" />
+                  <FileDrop label="Cover image" accept=".jpg,.jpeg,.png,.webp,image/*" file={cover} setFile={setCover} icon={<BookOpen size={22} />} hint="JPG, PNG or WEBP · max 5 MB (auto-compressed)" maxBytes={5 * 1024 * 1024} />
                   <FileDrop label="PDF document" accept=".pdf,application/pdf" file={file} setFile={setFile} icon={<FileText size={22} />} hint="PDF only · max 100 MB" />
                 </div>
 
@@ -1251,7 +1251,7 @@ function Field({ label, required, children }) {
   );
 }
 
-function FileDrop({ label, accept, file, setFile, icon, hint }) {
+function FileDrop({ label, accept, file, setFile, icon, hint, maxBytes }) {
   return (
     <label className={"admin-file-drop" + (file ? " has-file" : "")}>
       <div className="admin-file-icon">{icon}</div>
@@ -1259,7 +1259,7 @@ function FileDrop({ label, accept, file, setFile, icon, hint }) {
         <strong>{label}{file ? " selected" : ""}</strong>
         <span>{file ? file.name : hint}</span>
       </div>
-      <input type="file" accept={accept} required={!file} onChange={e => setFile(e.target.files?.[0] || null)} />
+      <input type="file" accept={accept} required={!file} onChange={e => { const selected = e.target.files?.[0] || null; if (selected && maxBytes && selected.size > maxBytes) { window.alert("Cover image must be 5 MB or smaller before compression."); e.target.value = ""; setFile(null); return; } setFile(selected); }} />
       <ChevronRight size={17} />
     </label>
   );
