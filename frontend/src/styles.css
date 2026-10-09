@@ -443,3 +443,26 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .reader.protected-reader .reader-controls button,.reader.protected-reader .reader-controls a{height:32px;min-width:32px;padding:0 8px}
   .reader.protected-reader .canvas-reader{padding:12px 7px 40px;gap:13px}
 }
+
+
+/* Reader clarity + real magnification */
+.reader.protected-reader .readerbar{justify-content:space-between;background:rgba(8,12,21,.98);border-bottom:1px solid #263149}
+.reader.protected-reader .reader-controls{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.reader.protected-reader .reader-controls button,
+.reader.protected-reader .reader-controls a{min-height:34px;padding:0 11px;border:1px solid #303a52;border-radius:9px;background:#121a2a;color:#e8ebf5;font-size:13px;font-weight:850;white-space:nowrap}
+.reader.protected-reader .reader-controls button:hover,
+.reader.protected-reader .reader-controls a:hover{background:#1c2740;border-color:#6254a0}
+.reader.protected-reader .reader-controls span{min-width:48px;font-size:12px;font-variant-numeric:tabular-nums;color:#c8cfe0}
+.reader.protected-reader .reader-controls .reader-fit-button{background:#241d42;border-color:#4b3d7c;color:#d5caff}
+.reader.protected-reader .canvas-reader{overflow-x:auto;overflow-y:auto;align-items:stretch;justify-content:flex-start;touch-action:pan-x pan-y;overscroll-behavior:contain}
+.reader.protected-reader .canvas-page{max-width:none;margin-left:auto;margin-right:auto;overflow:visible}
+.reader.protected-reader .canvas-page canvas{display:block;width:auto;height:auto;max-width:none;flex:0 0 auto;user-select:none;-webkit-user-select:none}
+@media(max-width:700px){
+  .reader.protected-reader .readerbar{gap:8px;padding:8px 9px}
+  .reader.protected-reader .readerbar>span{width:100%;font-size:11px}
+  .reader.protected-reader .reader-controls{width:100%;display:flex;gap:5px;flex-wrap:wrap}
+  .reader.protected-reader .reader-controls button,
+  .reader.protected-reader .reader-controls a{min-height:34px;padding:0 10px;font-size:12px}
+  .reader.protected-reader .reader-controls span{min-width:42px}
+  .reader.protected-reader .canvas-reader{padding:10px 7px 30px;gap:12px}
+}
