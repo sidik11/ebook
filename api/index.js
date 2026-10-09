@@ -1089,7 +1089,7 @@ router.post("/sadmin/upload-url", async (req, res) => {
     const spec = storageUploadSpec(type);
     if (!name || !spec || !Number.isFinite(Number(size)) || Number(size) <= 0 || Number(size) > spec.max) return res.status(400).json({ error: "Invalid file or unsupported upload type." });
     const r2 = requireR2();
-    const extension = spec.extension;
+    const extension = spec.ext;
     const storagePath = "private/" + (type === "application/pdf" ? "ebooks/" : "covers/") + crypto.randomUUID() + "." + extension;
     const command = new PutObjectCommand({ Bucket: r2.bucket, Key: storagePath, ContentType: type });
     const url = await getSignedUrl(r2.client, command, { expiresIn: 300 });
