@@ -834,9 +834,15 @@ function ProtectedPdfPage({ pdfDoc, pageNumber, scale, totalPages, scrollRootRef
     let active = true;
     const viewport = page.getViewport({ scale });
     const context = canvas.getContext("2d", { alpha: false });
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    const renderTask = page.render({ canvasContext: context, viewport });
+    // Render at device pixel density while keeping CSS dimensions at the
+    // intended zoom level. This prevents blurry text on high-DPI phones.
+    const outputScale = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
+    canvas.width = Math.ceil(viewport.width * outputScale);
+    canvas.height = Math.ceil(viewport.height * outputScale);
+    canvas.style.width = viewport.width + "px";
+    canvas.style.height = viewport.height + "px";
+    const transform = outputScale > 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+    const renderTask = page.render({ canvasContext: context, viewport, transform });
     renderTask.promise.catch(error => {
       if (active && error?.name !== "RenderingCancelledException") {
         errorCallbackRef.current?.(error?.message || "Unable to render PDF page.");
@@ -855,7 +861,7 @@ function ProtectedPdfPage({ pdfDoc, pageNumber, scale, totalPages, scrollRootRef
         registerPage(pageNumber, element);
       }}
       className="canvas-page"
-      style={geometry ? { width: Math.min(geometry.width, 960), maxWidth: "100%", aspectRatio: geometry.width + " / " + geometry.height } : { width: "min(100%, 720px)", minHeight: "65vh" }}
+      style={geometry ? { width: geometry.width + "px", height: geometry.height + "px", maxWidth: "none", flex: "0 0 auto" } : { width: "min(100%, 720px)", minHeight: "65vh" }}
       aria-label={"Page " + pageNumber + " of " + totalPages}
       onContextMenu={event => event.preventDefault()}
     >
@@ -932,6 +938,7 @@ function Reader() {
     if (!pdfDoc || !reader) return undefined;
     let active = true;
     let observer = null;
+    let fallbackUpdate = null;
 
     pdfDoc.getPage(1).then(firstPage => {
       if (!active || !canvasReaderRef.current) return;
@@ -948,7 +955,8 @@ function Reader() {
         observer = new ResizeObserver(updateFit);
         observer.observe(reader);
       } else {
-        window.addEventListener("resize", updateFit);
+        fallbackUpdate = updateFit;
+        window.addEventListener("resize", fallbackUpdate);
       }
     }).catch(e => {
       if (active) setError(e.message || "Could not calculate page size.");
@@ -957,7 +965,7 @@ function Reader() {
     return () => {
       active = false;
       if (observer) observer.disconnect();
-      else window.removeEventListener("resize", () => {});
+      if (fallbackUpdate) window.removeEventListener("resize", fallbackUpdate);
     };
   }, [pdfDoc]);
 
