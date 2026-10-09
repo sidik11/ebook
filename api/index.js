@@ -1283,6 +1283,71 @@ router.patch("/admin/users/:id/status", async (req, res) => {
   }
 });
 
+router.get("/admin/complaints", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    res.set("Cache-Control", "no-store, max-age=0");
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
+    const snap = await requireDb().ref("supportComplaints").once("value");
+    const complaints = [];
+    snap.forEach(child => {
+      const item = child.val() || {};
+      complaints.push({
+        id: child.key,
+        userId: safeText(item.userId, 150),
+        userName: safeText(item.userName, 120),
+        userEmail: validEmail(item.userEmail) ? item.userEmail : "",
+        category: safeText(item.category, 40),
+        message: safeText(item.message, 2000),
+        bookId: safeText(item.bookId, 150),
+        orderId: safeText(item.orderId, 100),
+        paymentId: safeText(item.paymentId, 100),
+        status: safeText(item.status || "OPEN", 30).toUpperCase(),
+        emailNotificationStatus: safeText(item.emailNotificationStatus || "UNKNOWN", 20).toUpperCase(),
+        resolutionNote: safeText(item.resolutionNote, 1000),
+        createdAt: Number(item.createdAt || 0),
+        updatedAt: Number(item.updatedAt || item.createdAt || 0),
+        resolvedAt: Number(item.resolvedAt || 0),
+        resolvedBy: safeText(item.resolvedBy, 200)
+      });
+    });
+    complaints.sort((a, b) => b.createdAt - a.createdAt);
+    res.json({ complaints: complaints.slice(0, limit) });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || "Could not load complaints" });
+  }
+});
+
+router.patch("/admin/complaints/:id", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const complaintId = key(req.params.id);
+    const complaint = await get("supportComplaints/" + complaintId);
+    if (!complaint) return res.status(404).json({ error: "Complaint not found" });
+    const allowedStatuses = new Set(["OPEN", "UNDER_REVIEW", "RESOLVED", "REFUND_ISSUED", "REJECTED"]);
+    const status = safeText(req.body?.status, 30).toUpperCase();
+    const resolutionNote = safeText(req.body?.resolutionNote, 1000);
+    if (!allowedStatuses.has(status)) return res.status(400).json({ error: "Invalid complaint status" });
+    if (["RESOLVED", "REFUND_ISSUED", "REJECTED"].includes(status) && resolutionNote.length < 5) {
+      return res.status(400).json({ error: "Add a resolution note of at least 5 characters before closing this complaint." });
+    }
+    const timestamp = now();
+    await update("supportComplaints/" + complaintId, {
+      status,
+      resolutionNote: resolutionNote || null,
+      updatedAt: timestamp,
+      updatedBy: auth.user.email,
+      ...(["RESOLVED", "REFUND_ISSUED", "REJECTED"].includes(status) ? { resolvedAt: timestamp, resolvedBy: auth.user.email } : { resolvedAt: null, resolvedBy: null })
+    });
+    await audit("SUPPORT_COMPLAINT_UPDATED", auth, { complaintId, status });
+    res.json({ ok: true, status });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not update complaint" });
+  }
+});
+
 router.get("/admin/orders", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
