@@ -7,6 +7,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams, useLocation } from "react-router-dom";
 import "./styles.css";
 import AdminPanel from "./AdminPanel";
+import SAdmin, { SAdminLogin } from "./SAdmin";
 
 // Global CSRF token cache
 let cachedCsrfToken = "";
@@ -20,7 +21,7 @@ function getCookie(name) {
 
 function activePortal() {
   const params = new URLSearchParams(window.location.search);
-  return window.location.pathname.startsWith("/admin") || params.get("portal") === "admin" ? "admin" : "user";
+  return window.location.pathname.startsWith("/admin") || params.get("portal") === "admin" ? "admin" : window.location.pathname.startsWith("/sadmin") || params.get("portal") === "sadmin" ? "sadmin" : "user";
 }
 
 export async function api(path, options = {}) {
@@ -31,7 +32,7 @@ export async function api(path, options = {}) {
 
   const method = (options.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-    const csrfCookie = activePortal() === "admin" ? "ms_admin_csrf" : "ms_csrf";
+    const csrfCookie = activePortal() === "admin" ? "ms_admin_csrf" : activePortal() === "sadmin" ? "ms_sadmin_csrf" : "ms_csrf";
     const csrf = cachedCsrfToken || getCookie(csrfCookie);
     if (csrf && !headers["X-CSRF-Token"]) {
       headers["X-CSRF-Token"] = csrf;
@@ -76,7 +77,7 @@ function Layout({ children }) {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const isAdminArea = location.pathname.startsWith("/admin") || new URLSearchParams(location.search).get("portal") === "admin";
+  const isAdminArea = location.pathname.startsWith("/admin") || location.pathname.startsWith("/sadmin") || ["admin", "sadmin"].includes(new URLSearchParams(location.search).get("portal"));
   const isReaderPage = location.pathname.startsWith("/read/");
 
   async function handleLogout() {
@@ -1195,7 +1196,7 @@ function Reader() {
 
 function App() {
   const location = useLocation();
-  const portal = location.pathname.startsWith("/admin") || new URLSearchParams(location.search).get("portal") === "admin" ? "admin" : "user";
+  const portal = location.pathname.startsWith("/admin") || new URLSearchParams(location.search).get("portal") === "admin" ? "admin" : location.pathname.startsWith("/sadmin") || new URLSearchParams(location.search).get("portal") === "sadmin" ? "sadmin" : "user";
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -1214,7 +1215,8 @@ function App() {
   // while the customer portal session is being checked (and vice versa).
   const portalUser = user && (
     (portal === "admin" && user.role === "admin") ||
-    (portal === "user" && user.role !== "admin")
+    (portal === "sadmin" && user.role === "sadmin") ||
+    (portal === "user" && !["admin", "sadmin"].includes(user.role))
   ) ? user : null;
 
   if (loading) {
@@ -1243,6 +1245,7 @@ function App() {
           <Route path="/library" element={portalUser ? <Library /> : <Navigate to="/login" replace />} />
           <Route path="/read/:id" element={portalUser ? <Reader /> : <Navigate to="/login" replace />} />
           <Route path="/admin/*" element={portalUser?.role === "admin" ? <AdminPanel /> : <AdminLogin />} />
+          <Route path="/sadmin/*" element={portalUser?.role === "sadmin" ? <SAdmin /> : <SAdminLogin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
