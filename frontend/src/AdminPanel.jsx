@@ -174,7 +174,7 @@ function AdminPanel() {
   };
 
   const cachedLogout = async () => {
-    try { await api("/api/auth/logout", { method: "POST" }); } catch {}
+    try { await api("/api/auth/logout?portal=admin", { method: "POST" }); } catch {}
     setUser(null);
     navigate("/admin", { replace: true });
   };
