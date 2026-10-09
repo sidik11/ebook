@@ -18,6 +18,11 @@ function getCookie(name) {
   return "";
 }
 
+function activePortal() {
+  const params = new URLSearchParams(window.location.search);
+  return window.location.pathname.startsWith("/admin") || params.get("portal") === "admin" ? "admin" : "user";
+}
+
 export async function api(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
@@ -26,7 +31,8 @@ export async function api(path, options = {}) {
 
   const method = (options.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-    const csrf = cachedCsrfToken || getCookie("ms_csrf");
+    const csrfCookie = activePortal() === "admin" ? "ms_admin_csrf" : "ms_csrf";
+    const csrf = cachedCsrfToken || getCookie(csrfCookie);
     if (csrf && !headers["X-CSRF-Token"]) {
       headers["X-CSRF-Token"] = csrf;
     }
@@ -56,8 +62,8 @@ export async function api(path, options = {}) {
   return data;
 }
 
-export async function checkAuth() {
-  const res = await api("/api/auth/me");
+export async function checkAuth(portal = activePortal()) {
+  const res = await api("/api/auth/me?portal=" + encodeURIComponent(portal));
   if (res.csrfToken) cachedCsrfToken = res.csrfToken;
   return res;
 }
@@ -74,7 +80,7 @@ function Layout({ children }) {
 
   async function handleLogout() {
     try {
-      await api("/api/auth/logout", { method: "POST" });
+      await api("/api/auth/logout?portal=user", { method: "POST" });
     } catch {}
     cachedCsrfToken = "";
     setUser(null);
@@ -315,7 +321,7 @@ function AdminLogin() {
       if (data.user?.role !== "admin") throw new Error("Administrator credentials required.");
       if (data.csrfToken) cachedCsrfToken = data.csrfToken;
       setUser(data.user);
-      navigate(data.user.mustChangePassword ? "/change-password" : "/admin");
+      navigate(data.user.mustChangePassword ? "/change-password?portal=admin" : "/admin");
     } catch (err) {
       if (err.data?.code === "ADMIN_OTP_REQUIRED" || err.message.includes("Admin verification code")) setOtpRequired(true);
       setError(err.message);
@@ -362,7 +368,8 @@ function ChangePassword() {
     if (newPassword !== confirmPassword) return setError("Passwords do not match");
     setBusy(true);
     try {
-      await api("/api/auth/change-password", {
+      const portalQuery = user?.role === "admin" ? "?portal=admin" : "?portal=user";
+      await api("/api/auth/change-password" + portalQuery, {
         method: "POST",
         body: JSON.stringify({ currentPassword, newPassword })
       });
@@ -896,15 +903,21 @@ function Reader() {
 }
 
 function App() {
+  const location = useLocation();
+  const portal = location.pathname.startsWith("/admin") || new URLSearchParams(location.search).get("portal") === "admin" ? "admin" : "user";
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    checkAuth()
-      .then(data => setUser(data.user))
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
-  }, []);
+    let active = true;
+    setLoading(true);
+    cachedCsrfToken = "";
+    checkAuth(portal)
+      .then(data => { if (active) setUser(data.user); })
+      .catch(() => { if (active) setUser(null); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [portal]);
 
   if (loading) {
     return (
