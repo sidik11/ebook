@@ -185,7 +185,7 @@ function AdminPanel() {
       return;
     }
     if (user.mustChangePassword) {
-      navigate("/change-password", { replace: true });
+      navigate("/change-password?portal=admin", { replace: true });
       return;
     }
     if (!initialized) loadAll();
