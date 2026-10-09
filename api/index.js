@@ -1183,7 +1183,7 @@ router.post("/sadmin/books", async (req, res) => {
   try {
     const auth = await sadminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
-    const book = normalizeBookInput(req.body || {});
+    const book = { ...normalizeBookInput(req.body || {}), category: "" };
     const r2 = requireR2();
     const [pdfMeta, coverMeta] = await Promise.all([
       r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.storagePath })),
@@ -1206,13 +1206,15 @@ router.patch("/admin/books/:id/review", async (req, res) => {
     const id = key(req.params.id);
     const decision = safeText(req.body?.decision, 20).toUpperCase();
     const note = safeText(req.body?.note, 1000);
+    const category = safeText(req.body?.category, 80);
     if (!["APPROVE", "REJECT"].includes(decision)) return res.status(400).json({ error: "Choose approve or reject." });
+    if (decision === "APPROVE" && !category) return res.status(400).json({ error: "Choose a category before publishing this book." });
     if (decision === "REJECT" && note.length < 5) return res.status(400).json({ error: "Add a rejection reason of at least 5 characters." });
     const db = requireDb();
     const reviewTime = now();
     const reviewTx = await db.ref("books/" + id).transaction(current => {
       if (!current || current.status !== "PENDING_REVIEW") return;
-      return { ...current, status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: reviewTime, reviewedBy: auth.userId, reviewNote: note || null, updatedAt: reviewTime };
+      return { ...current, ...(decision === "APPROVE" ? { category } : {}), status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: reviewTime, reviewedBy: auth.userId, reviewNote: note || null, updatedAt: reviewTime };
     });
     if (!reviewTx.committed) return res.status(409).json({ error: "This book is no longer pending review. Refresh the catalogue and check its current status." });
     await audit(decision === "APPROVE" ? "BOOK_APPROVED" : "BOOK_REJECTED", auth, { bookId: id });
@@ -1225,6 +1227,7 @@ router.post("/admin/books", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
     const book = normalizeBookInput(req.body || {});
+    if (!book.category) fail(400, "Choose or enter a category before publishing.");
     const r2 = requireR2();
     const [pdfMeta, coverMeta] = await Promise.all([
       r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.storagePath })),
