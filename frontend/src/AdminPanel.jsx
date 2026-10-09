@@ -30,6 +30,7 @@ import {
   UserCheck,
   Receipt,
   TrendingUp,
+  MessageSquare,
 } from "lucide-react";
 import { api, useAuth } from "./main";
 
@@ -38,6 +39,7 @@ const NAV = [
   { key: "upload", label: "Upload Book", icon: UploadCloud },
   { key: "library", label: "Library", icon: LibraryIcon },
   { key: "orders", label: "Orders", icon: ShoppingBag },
+  { key: "complaints", label: "Complaints", icon: MessageSquare },
   { key: "users", label: "Users", icon: Users },
   { key: "settings", label: "Settings", icon: Settings },
 ];
@@ -70,6 +72,11 @@ function AdminPanel() {
 
   const [books, setBooks] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [complaints, setComplaints] = useState([]);
+  const [complaintFilter, setComplaintFilter] = useState("ALL");
+  const [complaintQuery, setComplaintQuery] = useState("");
+  const [complaintBusyId, setComplaintBusyId] = useState("");
+  const [complaintNotes, setComplaintNotes] = useState({});
   const [users, setUsers] = useState([]);
   const [analytics, setAnalytics] = useState(emptyAnalytics);
   const [loading, setLoading] = useState(true);
@@ -128,6 +135,17 @@ function AdminPanel() {
     }
   };
 
+  const loadComplaints = async () => {
+    try {
+      const data = await api("/api/admin/complaints?limit=1000");
+      setComplaints(Array.isArray(data.complaints) ? data.complaints : []);
+    } catch (err) {
+      if (err.status === 401 || err.status === 403) throw err;
+      setComplaints([]);
+      showNotice("error", err.message || "Complaints could not be loaded.");
+    }
+  };
+
   const loadUsers = async () => {
     try {
       const data = await api("/api/admin/users?limit=1000");
@@ -159,7 +177,7 @@ function AdminPanel() {
     if (quiet) setRefreshing(true);
     else setLoading(true);
     try {
-      await Promise.all([loadBooks(), loadOrders(), loadUsers(), loadAnalytics()]);
+      await Promise.all([loadBooks(), loadOrders(), loadComplaints(), loadUsers(), loadAnalytics()]);
       setInitialized(true);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
@@ -190,6 +208,29 @@ function AdminPanel() {
     }
     if (!initialized) loadAll();
   }, [user]);
+
+  const updateComplaintStatus = async (complaint, status) => {
+    const resolutionNote = String(complaintNotes[complaint.id] || complaint.resolutionNote || "").trim();
+    if (["RESOLVED", "REFUND_ISSUED", "REJECTED"].includes(status) && resolutionNote.length < 5) {
+      showNotice("error", "Add a resolution note of at least 5 characters before closing this complaint.");
+      return;
+    }
+    setComplaintBusyId(complaint.id);
+    try {
+      await api("/api/admin/complaints/" + encodeURIComponent(complaint.id), {
+        method: "PATCH",
+        body: JSON.stringify({ status, resolutionNote })
+      });
+      setComplaints(current => current.map(item => item.id === complaint.id
+        ? { ...item, status, resolutionNote, updatedAt: Date.now() }
+        : item));
+      showNotice("success", "Complaint updated to " + status.replaceAll("_", " ").toLowerCase() + ".");
+    } catch (err) {
+      showNotice("error", err.message || "Could not update complaint.");
+    } finally {
+      setComplaintBusyId("");
+    }
+  };
 
   const updateUploadState = (kind, patch) => {
     setUploadState(previous => ({
@@ -890,6 +931,77 @@ function AdminPanel() {
               ) : (
                 <EmptyState icon={<ShoppingBag size={30} />} title="No orders yet" text="Customer payment orders will appear here when checkout is started." />
               )}
+            </div>
+          </section>
+        )}
+
+        {view === "complaints" && (
+          <section className="admin-page-grid">
+            <div className="admin-card">
+              <SectionHeading
+                eyebrow="CUSTOMER SUPPORT"
+                title={"Customer complaints · " + complaints.length}
+                subtitle="Review payment and access issues. Refunds must be processed separately in your payment provider; changing this status only records your support decision."
+              />
+              <div className="admin-user-toolbar">
+                <div className="admin-search-wrap">
+                  <Search size={17} />
+                  <input value={complaintQuery} onChange={e => setComplaintQuery(e.target.value)} placeholder="Search complaint, email, book, order or payment ID…" />
+                </div>
+                <select value={complaintFilter} onChange={e => setComplaintFilter(e.target.value)}>
+                  <option value="ALL">All statuses</option>
+                  <option value="OPEN">Open</option>
+                  <option value="UNDER_REVIEW">Under review</option>
+                  <option value="RESOLVED">Resolved</option>
+                  <option value="REFUND_ISSUED">Refund issued</option>
+                  <option value="REJECTED">Rejected</option>
+                </select>
+              </div>
+              {(() => {
+                const q = complaintQuery.trim().toLowerCase();
+                const filtered = complaints.filter(item =>
+                  (complaintFilter === "ALL" || item.status === complaintFilter) &&
+                  (!q || [item.id, item.userName, item.userEmail, item.category, item.message, item.bookId, item.orderId, item.paymentId].some(value => String(value || "").toLowerCase().includes(q)))
+                );
+                if (!filtered.length) {
+                  return <EmptyState icon={<MessageSquare size={30} />} title="No complaints found" text={complaints.length ? "Try another search or status filter." : "New customer complaints will appear here when submitted."} />;
+                }
+                return (
+                  <div className="admin-complaint-list">
+                    {filtered.map(item => (
+                      <article className="admin-complaint-card" key={item.id}>
+                        <div className="admin-complaint-head">
+                          <div>
+                            <span className="admin-header-kicker">{String(item.category || "OTHER").replaceAll("_", " ")}</span>
+                            <h3>{item.userName || "Customer"} <span>· {item.userEmail || "No email"}</span></h3>
+                            <p>Complaint ID: <strong>{item.id}</strong> · {formatDate(item.createdAt)}</p>
+                          </div>
+                          <b className={"admin-table-pill " + (["RESOLVED", "REFUND_ISSUED"].includes(item.status) ? "good" : item.status === "REJECTED" ? "blocked" : "neutral")}>{String(item.status || "OPEN").replaceAll("_", " ")}</b>
+                        </div>
+                        <p className="admin-complaint-message">{item.message || "No message supplied."}</p>
+                        <div className="admin-complaint-meta">
+                          <span><strong>Book:</strong> {item.bookId || "—"}</span>
+                          <span><strong>Order:</strong> {item.orderId || "—"}</span>
+                          <span><strong>Payment:</strong> {item.paymentId || "—"}</span>
+                          <span><strong>Email alert:</strong> {item.emailNotificationStatus || "UNKNOWN"}</span>
+                        </div>
+                        <label className="admin-field admin-complaint-note">
+                          <span>Resolution / review note {["RESOLVED", "REFUND_ISSUED", "REJECTED"].includes(item.status) ? "" : "(required before closing)"}</span>
+                          <textarea rows={2} maxLength={1000} value={complaintNotes[item.id] ?? item.resolutionNote ?? ""} onChange={e => setComplaintNotes(current => ({ ...current, [item.id]: e.target.value }))} placeholder="Record what was checked, access restored, or refund reference…" />
+                        </label>
+                        <div className="admin-complaint-actions">
+                          <button className="admin-secondary" disabled={complaintBusyId === item.id || item.status === "UNDER_REVIEW"} onClick={() => updateComplaintStatus(item, "UNDER_REVIEW")}>{complaintBusyId === item.id ? "Saving…" : "Mark under review"}</button>
+                          <button className="admin-secondary" disabled={complaintBusyId === item.id || item.status === "RESOLVED"} onClick={() => updateComplaintStatus(item, "RESOLVED")}>Mark resolved</button>
+                          <button className="admin-primary" disabled={complaintBusyId === item.id || item.status === "REFUND_ISSUED"} onClick={() => updateComplaintStatus(item, "REFUND_ISSUED")}>Mark refund issued</button>
+                          <button className="admin-user-action block" disabled={complaintBusyId === item.id || item.status === "REJECTED"} onClick={() => updateComplaintStatus(item, "REJECTED")}>Reject</button>
+                          {item.userEmail && <a className="admin-complaint-email" href={"mailto:" + encodeURIComponent(item.userEmail) + "?subject=" + encodeURIComponent("MS Tech EBook complaint " + item.id)}>Email customer</a>}
+                        </div>
+                        {item.resolvedBy && <p className="admin-complaint-resolution">Last handled by {item.resolvedBy}{item.resolvedAt ? " · " + formatDate(item.resolvedAt) : ""}</p>}
+                      </article>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </section>
         )}
