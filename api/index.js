@@ -742,7 +742,7 @@ router.post("/auth/login", async (req, res) => {
 
 router.post("/auth/change-password", async (req, res) => {
   try {
-    const auth = await guard(req, res);
+    const auth = await guard(req, res, requestPortal(req));
     if (!auth || !requireCsrf(req, res, auth)) return;
     const currentPassword = req.body?.currentPassword;
     const newPassword = req.body?.newPassword;
