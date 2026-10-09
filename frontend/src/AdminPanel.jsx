@@ -41,6 +41,7 @@ const NAV = [
   { key: "orders", label: "Orders", icon: ShoppingBag },
   { key: "complaints", label: "Complaints", icon: MessageSquare },
   { key: "users", label: "Users", icon: Users },
+  { key: "staff", label: "Sub-admins & Review", icon: UserCheck },
   { key: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -88,6 +89,12 @@ function AdminPanel() {
   const [userQuery, setUserQuery] = useState("");
   const [userStatusFilter, setUserStatusFilter] = useState("ALL");
   const [notice, setNotice] = useState({ type: "", text: "" });
+  const [subAdmins, setSubAdmins] = useState([]);
+  const [newSubAdminId, setNewSubAdminId] = useState("");
+  const [newSubAdminPassword, setNewSubAdminPassword] = useState("");
+  const [newSubAdminName, setNewSubAdminName] = useState("Book Uploader");
+  const [staffBusy, setStaffBusy] = useState(false);
+  const [reviewNotes, setReviewNotes] = useState({});
 
   const [form, setForm] = useState({
     title: "",
@@ -120,6 +127,21 @@ function AdminPanel() {
   };
 
   const goToUpload = () => setView("upload");
+
+  const loadSubAdmins = async () => { const data = await api("/api/admin/subadmins"); setSubAdmins(Array.isArray(data.users) ? data.users : []); };
+
+  const createSubAdmin = async event => {
+    event.preventDefault(); setStaffBusy(true);
+    try { const data = await api("/api/admin/subadmins", { method: "POST", body: JSON.stringify({ userId: newSubAdminId, password: newSubAdminPassword, name: newSubAdminName }) }); setSubAdmins(current => [...current, { id: data.user.id, name: data.user.name, status: "ACTIVE", mustChangePassword: true }]); setNewSubAdminId(""); setNewSubAdminPassword(""); setNotice({type:"success",text:"Sub-admin created. Share the ID and temporary password securely; the user must change it after login."}); }
+    catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
+  };
+  const reviewBook = async (book, decision) => {
+    const note = String(reviewNotes[book.id] || "").trim();
+    if (decision === "REJECT" && note.length < 5) { setNotice({type:"error",text:"Add a rejection reason of at least 5 characters."}); return; }
+    setStaffBusy(true);
+    try { await api("/api/admin/books/" + encodeURIComponent(book.id) + "/review", {method:"PATCH",body:JSON.stringify({decision,note})}); await loadBooks(); setNotice({type:"success",text:decision === "APPROVE" ? "Book approved and published to customers." : "Book rejected and kept unpublished."}); }
+    catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
+  };
 
   const loadBooks = async () => {
     const data = await api("/api/admin/books");
@@ -177,7 +199,7 @@ function AdminPanel() {
     if (quiet) setRefreshing(true);
     else setLoading(true);
     try {
-      await Promise.all([loadBooks(), loadOrders(), loadComplaints(), loadUsers(), loadAnalytics()]);
+      await Promise.all([loadBooks(), loadOrders(), loadComplaints(), loadUsers(), loadAnalytics(), loadSubAdmins()]);
       setInitialized(true);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
@@ -1058,6 +1080,31 @@ function AdminPanel() {
               ) : (
                 <EmptyState icon={<Users size={30} />} title="No users match" text="Change the search or status filter." />
               )}
+            </div>
+          </section>
+        )}
+
+        {view === "staff" && (
+          <section className="admin-page-grid">
+            <div className="admin-card">
+              <SectionHeading eyebrow="STAFF ACCESS" title="Generate sub-admin credentials" subtitle="Sub-admins cannot register themselves and can only upload books for review." />
+              <form onSubmit={createSubAdmin} style={{display:"grid",gap:12,maxWidth:560}}>
+                <label>Display name<input value={newSubAdminName} onChange={e=>setNewSubAdminName(e.target.value)} maxLength={120} required /></label>
+                <label>User ID<input value={newSubAdminId} onChange={e=>setNewSubAdminId(e.target.value)} pattern="[A-Za-z0-9_-]{3,64}" placeholder="book_uploader01" required /></label>
+                <label>Temporary password<input type="password" value={newSubAdminPassword} onChange={e=>setNewSubAdminPassword(e.target.value)} minLength={10} placeholder="10+ chars, upper/lower/number" required /></label>
+                <button className="admin-primary" disabled={staffBusy}>Generate sub-admin login</button>
+              </form>
+              <h3 style={{marginTop:24}}>Existing sub-admin accounts</h3>
+              {subAdmins.length ? <div className="admin-table-wrap"><table><thead><tr><th>User ID</th><th>Name</th><th>Status</th><th>First login password change</th></tr></thead><tbody>{subAdmins.map(item=><tr key={item.id}><td>{item.id}</td><td>{item.name}</td><td>{item.status}</td><td>{item.mustChangePassword?"Required":"Complete"}</td></tr>)}</tbody></table></div> : <p>No sub-admin accounts created yet.</p>}
+            </div>
+            <div className="admin-card">
+              <SectionHeading eyebrow="PUBLISHING GATE" title="Books awaiting review" subtitle="Only the main administrator can publish sub-admin submissions." />
+              {books.filter(book=>book.status==="PENDING_REVIEW").length ? books.filter(book=>book.status==="PENDING_REVIEW").map(book=><article key={book.id} style={{borderBottom:"1px solid var(--border,#ddd)",padding:"16px 0"}}>
+                <h3>{book.title}</h3><p>{book.author || "Unknown author"} · {book.category || "Uncategorized"} · {book.type==="FREE"?"Free":formatMoney(book.price)}</p>
+                <textarea placeholder="Review note (required for rejection)" value={reviewNotes[book.id]||""} onChange={e=>setReviewNotes(v=>({...v,[book.id]:e.target.value}))} rows={2} />
+                <div style={{display:"flex",gap:8,marginTop:8}}><button className="admin-primary" disabled={staffBusy} onClick={()=>reviewBook(book,"APPROVE")}>Approve & publish</button><button className="admin-secondary" disabled={staffBusy} onClick={()=>reviewBook(book,"REJECT")}>Reject</button></div>
+              </article>) : <p>No books are awaiting review.</p>}
+              {notice.text && <p className={notice.type==="error"?"error":"success"}>{notice.text}</p>}
             </div>
           </section>
         )}
