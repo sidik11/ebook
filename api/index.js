@@ -1584,11 +1584,31 @@ router.post("/support/complaints", async (req, res) => {
       orderId: orderId || null,
       paymentId: paymentId || null,
       status: "OPEN",
+      emailNotificationStatus: "PENDING",
       createdAt: now(),
       updatedAt: now()
     });
-    await audit("SUPPORT_COMPLAINT_CREATED", auth, { complaintId, category, bookId: bookId || null, orderId: orderId || null });
-    res.status(201).json({ ok: true, complaintId, status: "OPEN", message: "Complaint submitted. Please keep your complaint ID for follow-up." });
+
+    // Email is best-effort: never lose a saved complaint because SMTP/OAuth
+    // is unavailable. The complaint remains recorded for administrator review.
+    let emailNotificationStatus = "FAILED";
+    const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[char]));
+    try {
+      await sendGmail({
+        to: "msinnovatex@gmail.com, Info@msinnovatex.com",
+        subject: "MS Tech EBook support complaint " + complaintId,
+        text: "A customer support complaint was submitted. ID: " + complaintId + "; Category: " + category + "; Customer: " + auth.user.email + "; Book: " + (bookId || "not provided") + "; Order: " + (orderId || "not provided") + "; Payment: " + (paymentId || "not provided") + "; Message: " + message,
+        html: "<div style='font-family:Arial,sans-serif;max-width:640px;margin:auto'><h2>MS Tech EBook complaint</h2><p><strong>Complaint ID:</strong> " + escapeHtml(complaintId) + "</p><p><strong>Category:</strong> " + escapeHtml(category) + "</p><p><strong>Customer:</strong> " + escapeHtml(auth.user.name) + " (" + escapeHtml(auth.user.email) + ")</p><p><strong>Book ID:</strong> " + escapeHtml(bookId || "Not provided") + "</p><p><strong>Order ID:</strong> " + escapeHtml(orderId || "Not provided") + "</p><p><strong>Payment ID:</strong> " + escapeHtml(paymentId || "Not provided") + "</p><p><strong>Details:</strong></p><p>" + escapeHtml(message).replace(/\n/g, "<br>") + "</p><p>Status: OPEN</p></div>"
+      });
+      emailNotificationStatus = "SENT";
+    } catch (mailError) {
+      console.warn("Complaint email notification failed:", mailError.message);
+    }
+    await update("supportComplaints/" + complaintId, { emailNotificationStatus, updatedAt: now() });
+    await audit("SUPPORT_COMPLAINT_CREATED", auth, { complaintId, category, bookId: bookId || null, orderId: orderId || null, emailNotificationStatus });
+    res.status(201).json({ ok: true, complaintId, status: "OPEN", message: "Complaint submitted. Please keep your complaint ID for follow-up.", emailNotificationStatus });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Could not submit complaint. Please email support." });
   }
