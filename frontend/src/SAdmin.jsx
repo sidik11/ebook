@@ -16,12 +16,12 @@ export function SAdminLogin() {
       const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email: userId, password, portal: "sadmin" }) });
       if (data.user?.role !== "sadmin") throw new Error("Sub-admin credentials required.");
       setUser(data.user);
-      navigate(data.user.mustChangePassword ? "/change-password?portal=sadmin" : "/sadmin");
+      navigate("/sadmin");
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   return <main className="auth"><form onSubmit={submit}>
     <span className="auth-kicker">STAFF ACCESS</span><h1>Book Uploader Login</h1>
-    <p>Sign in with the user ID and temporary password provided by the main administrator. Registration is disabled.</p>
+    <p>Sign in with the fixed user ID and password provided by the main administrator. Only the main administrator can change your credentials. Registration is disabled.</p>
     <input autoComplete="username" placeholder="Sub-admin user ID" value={userId} onChange={e=>setUserId(e.target.value)} required />
     <input type="password" autoComplete="current-password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} required />
     {error && <p className="error">{error}</p>}
