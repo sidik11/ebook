@@ -425,3 +425,21 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .card h3{font-size:13px;margin-left:10px;margin-right:10px}
   .card p,.card strong{margin-left:10px;margin-right:10px}
 }
+
+
+/* Protected PDF: the whole book is a single vertically scrollable reader */
+.reader.protected-reader{height:100dvh;min-height:0;max-height:100dvh;overflow:hidden;display:flex;flex-direction:column}
+.reader.protected-reader .readerbar{height:auto;min-height:58px;flex:0 0 auto;position:relative;top:auto;padding:10px 16px;gap:10px;flex-wrap:wrap;z-index:2}
+.reader.protected-reader .canvas-reader{height:0;min-height:0;flex:1 1 auto;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:22px;padding:24px 16px 64px;scroll-behavior:smooth;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+.reader.protected-reader .canvas-page{position:relative;display:block;flex:0 0 auto;margin:0 auto;overflow:hidden;background:#fff;box-shadow:0 18px 52px rgba(0,0,0,.42);line-height:0;max-width:100%;user-select:none;-webkit-user-select:none}
+.reader.protected-reader .canvas-page canvas{display:block;width:100%;height:auto;max-width:100%;user-select:none;-webkit-user-select:none;pointer-events:none}
+.reader.protected-reader .canvas-page-number{position:absolute;right:9px;bottom:8px;padding:3px 7px;border-radius:6px;background:rgba(8,12,21,.72);color:#e5e9f5;font:700 10px/1.2 system-ui,sans-serif;opacity:.55;pointer-events:none}
+.reader.protected-reader .center{flex:1;min-height:0}
+@media(max-width:700px){
+  .reader.protected-reader{height:100dvh;max-height:100dvh}
+  .reader.protected-reader .readerbar{padding:8px 10px;align-items:flex-start}
+  .reader.protected-reader .readerbar>span{font-size:11px}
+  .reader.protected-reader .reader-controls{width:100%;gap:5px;flex-wrap:wrap}
+  .reader.protected-reader .reader-controls button,.reader.protected-reader .reader-controls a{height:32px;min-width:32px;padding:0 8px}
+  .reader.protected-reader .canvas-reader{padding:12px 7px 40px;gap:13px}
+}
