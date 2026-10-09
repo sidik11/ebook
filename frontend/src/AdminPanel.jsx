@@ -64,6 +64,11 @@ const emptyAnalytics = {
   recentOrders: []
 };
 
+function localDateInput() {
+  const date = new Date();
+  return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+}
+
 function AdminPanel() {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
@@ -101,11 +106,13 @@ function AdminPanel() {
   const [reviewNotes, setReviewNotes] = useState({});
   const [reviewCategories, setReviewCategories] = useState({});
   const [reviewNewCategories, setReviewNewCategories] = useState({});
+  const [reviewPublishedDates, setReviewPublishedDates] = useState({});
 
   const [form, setForm] = useState({
     title: "",
     author: "",
     category: "",
+    publishedDate: localDateInput(),
     description: "",
     price: "",
   });
@@ -180,11 +187,13 @@ function AdminPanel() {
     const note = String(reviewNotes[book.id] || "").trim();
     const categoryChoice = String(reviewCategories[book.id] || "").trim();
     const category = categoryChoice === "__new__" ? String(reviewNewCategories[book.id] || "").trim() : categoryChoice;
+    const publishedDate = String(reviewPublishedDates[book.id] || "").trim();
     if (decision === "APPROVE" && !category) { setNotice({type:"error",text:"Choose an existing category or enter a new category before publishing."}); return; }
+    if (decision === "APPROVE" && !/^\d{4}-\d{2}-\d{2}$/.test(publishedDate)) { setNotice({type:"error",text:"Choose a valid published date before publishing."}); return; }
     if (decision === "REJECT" && note.length < 5) { setNotice({type:"error",text:"Add a rejection reason of at least 5 characters."}); return; }
     setStaffBusy(true);
     try {
-      await api("/api/admin/books/" + encodeURIComponent(book.id) + "/review", {method:"PATCH",body:JSON.stringify({decision,note,...(decision === "APPROVE" ? {category} : {})})});
+      await api("/api/admin/books/" + encodeURIComponent(book.id) + "/review", {method:"PATCH",body:JSON.stringify({decision,note,...(decision === "APPROVE" ? {category,publishedDate} : {})})});
       await loadBooks();
       setNotice({type:"success",text:decision === "APPROVE" ? "Book categorized, approved, and published to customers." : "Book rejected and kept unpublished."});
     } catch(err) { setNotice({type:"error",text:err.message}); } finally { setStaffBusy(false); }
@@ -428,7 +437,7 @@ function AdminPanel() {
   };
 
   const resetUpload = () => {
-    setForm({ title: "", author: "", category: "", description: "", price: "" });
+    setForm({ title: "", author: "", category: "", publishedDate: localDateInput(), description: "", price: "" });
     setType("PAID");
     setCover(null);
     setFile(null);
@@ -509,6 +518,7 @@ function AdminPanel() {
       title: book.title || "",
       author: book.author || "",
       category: book.category || "",
+      publishedDate: book.publishedDate || localDateInput(),
       description: book.description || "",
       price: book.price || "",
       type: book.type || "PAID",
@@ -857,6 +867,9 @@ function AdminPanel() {
                       {existingCategories.map(category => <option key={category} value={category} />)}
                     </datalist>
                   </Field>
+                  <Field label="Published date" required>
+                    <input type="date" value={form.publishedDate} onChange={e => setForm({ ...form, publishedDate: e.target.value })} required />
+                  </Field>
                   <Field label="Access type">
                     <select value={type} onChange={e => setType(e.target.value)}>
                       <option value="PAID">Paid ebook</option>
@@ -967,7 +980,7 @@ function AdminPanel() {
                       <div className="admin-book-info">
                         <strong>{book.title}</strong>
                         <span>{book.author || "MS Tech EBook"} · {book.category || "General"}</span>
-                        <small>Added {formatDate(book.createdAt)}</small>
+                        <small>Published {book.publishedDate || "Date not set"} · Added {formatDate(book.createdAt)}</small>
                       </div>
                       <div className="admin-book-badges">
                         <b className={book.type === "PAID" && Number(book.price || 0) > 0 ? "paid" : "free"}>
@@ -1173,6 +1186,10 @@ function AdminPanel() {
               {books.filter(book=>book.status==="PENDING_REVIEW").length ? books.filter(book=>book.status==="PENDING_REVIEW").map(book=><article key={book.id} style={{borderBottom:"1px solid var(--border,#ddd)",padding:"16px 0"}}>
                 <h3>{book.title}</h3><p>{book.author || "Unknown author"} · {book.type==="FREE"?"Free":formatMoney(book.price)}</p>
                 <label style={{display:"grid",gap:6,margin:"12px 0"}}>
+                  <strong>Published date *</strong>
+                  <input type="date" value={reviewPublishedDates[book.id] || localDateInput()} onChange={e=>setReviewPublishedDates(v=>({...v,[book.id]:e.target.value}))} required />
+                </label>
+                <label style={{display:"grid",gap:6,margin:"12px 0"}}>
                   <strong>Choose category before publishing *</strong>
                   <select required value={reviewCategories[book.id] || ""} onChange={e=>setReviewCategories(v=>({...v,[book.id]:e.target.value}))}>
                     <option value="">Select a category…</option>
@@ -1242,6 +1259,9 @@ function AdminPanel() {
                   </select>
                 </Field>
               </div>
+              <Field label="Published date" required>
+                <input type="date" value={editing.publishedDate || ""} onChange={e => setEditing({ ...editing, publishedDate: e.target.value })} required />
+              </Field>
               <Field label="Price (INR)">
                 <input type="number" min="1" step="1" disabled={editing.type === "FREE"} required={editing.type === "PAID"} value={editing.type === "FREE" ? "" : editing.price} onChange={e => setEditing({ ...editing, price: e.target.value })} />
               </Field>
