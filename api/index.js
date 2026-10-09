@@ -1043,6 +1043,16 @@ function normalizeBookInput(body) {
   };
 }
 
+router.get("/admin/subadmins", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res); if (!auth) return;
+    const snap = await requireDb().ref("users").once("value");
+    const users = [];
+    snap.forEach(child => { const u=child.val()||{}; if (u.role === "sadmin") users.push({ id: child.key, name: u.name || "", status: u.status || "ACTIVE", createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null, mustChangePassword: Boolean(u.mustChangePassword) }); });
+    res.set("Cache-Control", "no-store, max-age=0"); res.json({ users });
+  } catch(e) { res.status(e.status || 500).json({error:e.message || "Could not load sub-admins"}); }
+});
+
 router.post("/admin/subadmins", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
