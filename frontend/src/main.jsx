@@ -207,7 +207,7 @@ function Grid({ books = [] }) {
         <Link className="card" to={`/books/${b.id}`} key={b.id}>
           <div className="cover">
             {b.coverUrl ? (
-              <img src={b.coverUrl} alt={b.title} loading="lazy" />
+              <img src={b.coverUrl} alt={b.title} loading="lazy" decoding="async" width="700" height="1000" />
             ) : (
               <b>MS<br />TECH<br />EBOOK</b>
             )}
@@ -800,7 +800,7 @@ function Detail() {
     <main className="detail">
       <div className="cover big">
         {book.coverUrl ? (
-          <img src={book.coverUrl} alt={book.title} />
+          <img src={book.coverUrl} alt={book.title} loading="eager" decoding="async" width="700" height="1000" />
         ) : (
           <b>MS<br />TECH<br />EBOOK</b>
         )}
