@@ -247,8 +247,12 @@ function AuthForm({ register = false }) {
       } else {
         if (data.csrfToken) cachedCsrfToken = data.csrfToken;
         setUser(data.user);
-        if (data.user.mustChangePassword) navigate("/change-password");
-        else navigate("/books");
+        if (data.user.mustChangePassword) {
+          navigate("/change-password");
+        } else {
+          const requestedNext = new URLSearchParams(window.location.search).get("next") || "";
+          navigate(requestedNext.startsWith("/") && !requestedNext.startsWith("//") ? requestedNext : "/books");
+        }
       }
     } catch (err) {
       setError(err.message);
