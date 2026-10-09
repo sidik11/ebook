@@ -503,3 +503,31 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .support-success{padding:22px}
   .support-page form h1{font-size:28px}
 }
+
+
+/* Administrator complaint review workspace */
+.admin-complaint-list{display:grid;gap:16px;margin-top:18px}
+.admin-complaint-card{min-width:0;padding:20px;border:1px solid #29334b;border-radius:16px;background:linear-gradient(145deg,rgba(17,24,39,.86),rgba(10,14,24,.92))}
+.admin-complaint-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.admin-complaint-head h3{margin:7px 0 5px;font-size:17px;overflow-wrap:anywhere}
+.admin-complaint-head h3 span{font-size:13px;font-weight:500;color:#9ca8bf}
+.admin-complaint-head p,.admin-complaint-resolution{margin:0;color:#8996ad;font-size:12px;overflow-wrap:anywhere}
+.admin-complaint-head p strong{color:#c7d0e2}
+.admin-complaint-message{margin:16px 0;padding:14px;border-radius:10px;background:#090e18;color:#d5dced;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}
+.admin-complaint-meta{display:flex;flex-wrap:wrap;gap:9px 18px;margin:12px 0 18px}
+.admin-complaint-meta span{font-size:12px;color:#98a5bd;overflow-wrap:anywhere}
+.admin-complaint-meta strong{color:#d6dced}
+.admin-complaint-note{margin-top:8px}
+.admin-complaint-note textarea{width:100%;resize:vertical;min-height:68px;padding:11px 12px;border:1px solid #30384d;border-radius:10px;background:#080d16;color:#f4f6ff;font:inherit;font-size:13px}
+.admin-complaint-actions{display:flex;align-items:center;flex-wrap:wrap;gap:9px;margin-top:14px}
+.admin-complaint-actions button{min-height:36px}
+.admin-complaint-actions button:disabled{opacity:.55;cursor:not-allowed}
+.admin-complaint-email{font-size:12px;color:#b9aaff;text-decoration:underline;text-underline-offset:3px;margin-left:auto}
+.admin-complaint-resolution{margin-top:13px}
+@media(max-width:640px){
+  .admin-complaint-card{padding:15px}
+  .admin-complaint-head{flex-direction:column}
+  .admin-complaint-actions{align-items:stretch}
+  .admin-complaint-actions button{flex:1 1 145px}
+  .admin-complaint-email{margin:5px 0}
+}
