@@ -90,7 +90,7 @@ function Layout({ children }) {
 
   return (
     <>
-      {!isAdminArea && (
+      {!isAdminArea && !isReaderPage && (
         <header>
           <Link className="brand" to="/">MS Tech EBook</Link>
           <nav>
@@ -110,7 +110,7 @@ function Layout({ children }) {
         </header>
       )}
       {children}
-      {!isAdminArea && (
+      {!isAdminArea && !isReaderPage && (
         <footer>
           <p>© {new Date().getFullYear()} MS Tech EBook. All rights reserved.</p>
         </footer>
@@ -874,7 +874,9 @@ function Reader() {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pageNumber, setPageNumber] = useState(1);
   const [numPages, setNumPages] = useState(0);
+  // "scale" is the zoom multiplier on top of fit-to-width.
   const [scale, setScale] = useState(1.0);
+  const [fitScale, setFitScale] = useState(1);
   const canvasReaderRef = useRef(null);
   const pageRefs = useRef({});
 
@@ -926,6 +928,40 @@ function Reader() {
   }, [url]);
 
   useEffect(() => {
+    const reader = canvasReaderRef.current;
+    if (!pdfDoc || !reader) return undefined;
+    let active = true;
+    let observer = null;
+
+    pdfDoc.getPage(1).then(firstPage => {
+      if (!active || !canvasReaderRef.current) return;
+      const pageWidth = firstPage.getViewport({ scale: 1 }).width;
+      const updateFit = () => {
+        if (!active || !canvasReaderRef.current) return;
+        // Keep the full page visible by default; zoom can then enlarge it past
+        // the phone width and the reader will provide horizontal panning.
+        const availableWidth = Math.max(240, canvasReaderRef.current.clientWidth - 28);
+        setFitScale(Math.max(0.35, Math.min(1, availableWidth / pageWidth)));
+      };
+      updateFit();
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(updateFit);
+        observer.observe(reader);
+      } else {
+        window.addEventListener("resize", updateFit);
+      }
+    }).catch(e => {
+      if (active) setError(e.message || "Could not calculate page size.");
+    });
+
+    return () => {
+      active = false;
+      if (observer) observer.disconnect();
+      else window.removeEventListener("resize", () => {});
+    };
+  }, [pdfDoc]);
+
+  useEffect(() => {
     const preventAction = event => event.preventDefault();
     const preventKeys = event => {
       const key = String(event.key || "").toLowerCase();
@@ -969,9 +1005,10 @@ function Reader() {
       <div className="readerbar">
         <span>Protected Reader · Copy Disabled</span>
         <div className="reader-controls">
-          <button type="button" aria-label="Zoom out" onClick={() => setScale(value => Math.max(.65, Number((value - .1).toFixed(1))))}>−</button>
-          <span>{Math.round(scale * 100)}%</span>
-          <button type="button" aria-label="Zoom in" onClick={() => setScale(value => Math.min(2.2, Number((value + .1).toFixed(1))))}>+</button>
+          <button type="button" aria-label="Zoom out" onClick={() => setScale(value => Math.max(.75, Number((value - .1).toFixed(1))))}>−</button>
+          <span aria-live="polite">{Math.round(scale * 100)}%</span>
+          <button type="button" aria-label="Zoom in" onClick={() => setScale(value => Math.min(3, Number((value + .1).toFixed(1))))}>+</button>
+          <button type="button" className="reader-fit-button" onClick={() => setScale(1)}>Fit width</button>
           <button type="button" aria-label="Previous page" disabled={pageNumber <= 1} onClick={() => goToPage(pageNumber - 1)}>‹</button>
           <span>{numPages ? `${pageNumber} / ${numPages}` : "—"}</span>
           <button type="button" aria-label="Next page" disabled={!numPages || pageNumber >= numPages} onClick={() => goToPage(pageNumber + 1)}>›</button>
@@ -989,7 +1026,7 @@ function Reader() {
               pdfDoc={pdfDoc}
               pageNumber={index + 1}
               totalPages={numPages}
-              scale={scale}
+              scale={fitScale * scale}
               scrollRootRef={canvasReaderRef}
               registerPage={registerPage}
               onActivePage={onActivePage}
