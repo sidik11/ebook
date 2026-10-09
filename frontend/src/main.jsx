@@ -254,6 +254,7 @@ function Home() {
 function Books() {
   const [books, setBooks] = useState([]);
   const [search, setSearch] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("ALL");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -264,20 +265,31 @@ function Books() {
       .finally(() => setLoading(false));
   }, []);
 
-  const filtered = books.filter(b =>
-    `${b.title} ${b.author || ""} ${b.category || ""}`.toLowerCase().includes(search.toLowerCase())
-  );
+  const categories = [...new Set(books.map(book => String(book.category || "").trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  const filtered = books.filter(b => {
+    const matchesCategory = selectedCategory === "ALL" || String(b.category || "").trim() === selectedCategory;
+    const matchesSearch = `${b.title} ${b.author || ""} ${b.category || ""}`.toLowerCase().includes(search.toLowerCase());
+    return matchesCategory && matchesSearch;
+  });
 
   return (
     <main className="container">
       <h1>All Ebooks</h1>
       {error && <p className="error">{error}</p>}
-      <input
-        type="search"
-        placeholder="Search by title, author, or category..."
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-      />
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(180px, 260px)", gap: "12px", margin: "16px 0" }}>
+        <input
+          type="search"
+          placeholder="Search by title, author, or category..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <select aria-label="Filter ebooks by category" value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}>
+          <option value="ALL">All categories</option>
+          {categories.map(category => <option key={category} value={category}>{category}</option>)}
+        </select>
+      </div>
+      {!loading && !error && <p style={{ color: "#8b949e", marginTop: 0 }}>{filtered.length} {filtered.length === 1 ? "book" : "books"} found</p>}
       {loading ? (
         <p style={{ color: "#8b949e" }}>Loading ebooks...</p>
       ) : (
