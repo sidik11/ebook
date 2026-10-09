@@ -1048,7 +1048,7 @@ router.get("/admin/subadmins", async (req, res) => {
     const auth = await adminGuard(req, res); if (!auth) return;
     const snap = await requireDb().ref("users").once("value");
     const users = [];
-    snap.forEach(child => { const u=child.val()||{}; if (u.role === "sadmin") users.push({ id: child.key, name: u.name || "", status: u.status || "ACTIVE", createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null, mustChangePassword: Boolean(u.mustChangePassword) }); });
+    snap.forEach(child => { const u=child.val()||{}; if (u.role === "sadmin") users.push({ id: child.key, name: u.name || "", status: u.status || "ACTIVE", createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null }); });
     res.set("Cache-Control", "no-store, max-age=0"); res.json({ users });
   } catch(e) { res.status(e.status || 500).json({error:e.message || "Could not load sub-admins"}); }
 });
@@ -1064,11 +1064,78 @@ router.post("/admin/subadmins", async (req, res) => {
     if (!validPassword(password)) return res.status(400).json({ error: "Password must be 10-128 characters and include uppercase, lowercase, and a number." });
     const existing = await get("users/" + subAdminId);
     if (existing) return res.status(409).json({ error: "That user ID is already in use." });
-    const user = { name, email: null, passwordHash: passwordHash(password), role: "sadmin", status: "ACTIVE", mustChangePassword: true, createdAt: now(), createdBy: auth.userId, updatedAt: now() };
+    const user = { name, email: null, passwordHash: passwordHash(password), role: "sadmin", status: "ACTIVE", mustChangePassword: false, createdAt: now(), createdBy: auth.userId, updatedAt: now() };
     await set("users/" + subAdminId, user);
     await audit("SUBADMIN_CREATED", auth, { subAdminId });
-    res.status(201).json({ ok: true, user: { id: subAdminId, name, role: "sadmin", mustChangePassword: true } });
+    res.status(201).json({ ok: true, user: { id: subAdminId, name, role: "sadmin", status: "ACTIVE", mustChangePassword: false } });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create sub-admin" }); }
+});
+
+
+router.patch("/admin/subadmins/:id", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const subAdminId = key(req.params.id);
+    const user = await get("users/" + subAdminId);
+    if (!user || user.role !== "sadmin") return res.status(404).json({ error: "Sub-admin account not found." });
+    const name = safeText(req.body?.name, 120);
+    if (!name) return res.status(400).json({ error: "Display name is required." });
+    const changes = { name, updatedAt: now(), updatedBy: auth.userId };
+    if (typeof req.body?.password === "string" && req.body.password.length) {
+      if (!validPassword(req.body.password)) return res.status(400).json({ error: "Password must be 10-128 characters and include uppercase, lowercase, and a number." });
+      changes.passwordHash = passwordHash(req.body.password);
+      changes.mustChangePassword = false;
+    }
+    await update("users/" + subAdminId, changes);
+    if (changes.passwordHash) {
+      const sessions = await requireDb().ref("sessions").orderByChild("userId").equalTo(subAdminId).once("value");
+      const sessionUpdates = {};
+      sessions.forEach(child => { sessionUpdates["sessions/" + child.key + "/revoked"] = true; sessionUpdates["sessions/" + child.key + "/revokedAt"] = now(); });
+      if (Object.keys(sessionUpdates).length) await requireDb().ref().update(sessionUpdates);
+    }
+    await audit(changes.passwordHash ? "SUBADMIN_UPDATED_AND_PASSWORD_RESET" : "SUBADMIN_UPDATED", auth, { subAdminId });
+    res.json({ ok: true, user: { id: subAdminId, name, status: changes.status || user.status || "ACTIVE" } });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not update sub-admin." }); }
+});
+
+router.patch("/admin/subadmins/:id/status", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const subAdminId = key(req.params.id);
+    const user = await get("users/" + subAdminId);
+    if (!user || user.role !== "sadmin") return res.status(404).json({ error: "Sub-admin account not found." });
+    const status = String(req.body?.status || "").toUpperCase();
+    if (!["ACTIVE", "BLOCKED"].includes(status)) return res.status(400).json({ error: "Status must be ACTIVE or BLOCKED." });
+    await update("users/" + subAdminId, { status, updatedAt: now(), updatedBy: auth.userId });
+    if (status === "BLOCKED") {
+      const sessions = await requireDb().ref("sessions").orderByChild("userId").equalTo(subAdminId).once("value");
+      const sessionUpdates = {};
+      sessions.forEach(child => { sessionUpdates["sessions/" + child.key + "/revoked"] = true; sessionUpdates["sessions/" + child.key + "/revokedAt"] = now(); });
+      if (Object.keys(sessionUpdates).length) await requireDb().ref().update(sessionUpdates);
+    }
+    await audit(status === "BLOCKED" ? "SUBADMIN_BLOCKED" : "SUBADMIN_UNBLOCKED", auth, { subAdminId });
+    res.json({ ok: true, id: subAdminId, status });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not update sub-admin status." }); }
+});
+
+router.delete("/admin/subadmins/:id", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const subAdminId = key(req.params.id);
+    const user = await get("users/" + subAdminId);
+    if (!user || user.role !== "sadmin") return res.status(404).json({ error: "Sub-admin account not found." });
+    const sessions = await requireDb().ref("sessions").orderByChild("userId").equalTo(subAdminId).once("value");
+    const sessionUpdates = {};
+    sessions.forEach(child => { sessionUpdates["sessions/" + child.key + "/revoked"] = true; sessionUpdates["sessions/" + child.key + "/revokedAt"] = now(); });
+    const updates = { ["users/" + subAdminId]: null };
+    for (const [path, value] of Object.entries(sessionUpdates)) updates[path] = value;
+    await requireDb().ref().update(updates);
+    await audit("SUBADMIN_DELETED", auth, { subAdminId });
+    res.json({ ok: true, id: subAdminId });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not delete sub-admin." }); }
 });
 
 router.get("/sadmin/books", async (req, res) => {
