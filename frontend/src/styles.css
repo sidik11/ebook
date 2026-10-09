@@ -590,3 +590,46 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .sadmin-status{font-size:10px;text-transform:uppercase;letter-spacing:.06em;border:1px solid #39435b;border-radius:99px;padding:4px 7px;color:#c4baff}
 .sadmin-book-info>strong{font-size:13px;color:#e6e9f5}
 @media(max-width:650px){.sadmin-workspace{padding-left:4%!important;padding-right:4%!important}.sadmin-fields-grid,.sadmin-file-grid{grid-template-columns:1fr}.sadmin-full{grid-column:auto}.sadmin-file-card{min-height:100px;padding:13px}.sadmin-section-heading h2,.sadmin-catalogue-heading h2{font-size:22px}.sadmin-progress-heading{align-items:flex-start;flex-direction:column}}
+
+
+/* Storefront book metadata: keep author, publication date, and price aligned
+   across cards even when titles/authors wrap on narrow screens. */
+.grid .card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.grid .card h3 {
+  line-height: 1.35;
+  min-height: 2.7em;
+  overflow-wrap: anywhere;
+}
+.grid .card p {
+  line-height: 1.45;
+  min-height: 1.45em;
+  overflow-wrap: anywhere;
+}
+.book-published-date {
+  display: block;
+  margin: 10px 14px 0;
+  min-height: 2.8em;
+  line-height: 1.4;
+  font-size: clamp(12px, 2.8vw, 15px);
+  color: #d0d6e6;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.grid .card > strong {
+  margin-top: auto;
+  padding-top: 14px;
+  line-height: 1.4;
+}
+@media (max-width: 420px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .grid .card h3, .grid .card p { margin-left: 10px; margin-right: 10px; }
+  .book-published-date { margin-left: 10px; margin-right: 10px; font-size: 12px; }
+  .grid .card > strong { margin-left: 10px; margin-right: 10px; }
+}
