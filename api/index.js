@@ -272,15 +272,26 @@ async function createSession(userId) {
 
 const isProduction = process.env.NODE_ENV === "production" && !process.env.DEV_MODE;
 
-function setSession(res, session) {
-  res.cookie("ms_session", session.raw, {
+function portalCookieNames(portal = "user") {
+  return portal === "admin"
+    ? { session: "ms_admin_session", csrf: "ms_admin_csrf" }
+    : { session: "ms_session", csrf: "ms_csrf" };
+}
+
+function requestPortal(req) {
+  return String(req.query?.portal || "").toLowerCase() === "admin" ? "admin" : "user";
+}
+
+function setSession(res, session, portal = "user") {
+  const names = portalCookieNames(portal);
+  res.cookie(names.session, session.raw, {
     httpOnly: true,
     secure: isProduction,
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_MS
   });
-  res.cookie("ms_csrf", session.csrf, {
+  res.cookie(names.csrf, session.csrf, {
     httpOnly: false,
     secure: isProduction,
     sameSite: "lax",
@@ -289,19 +300,23 @@ function setSession(res, session) {
   });
 }
 
-async function current(req) {
-  const raw = req.cookies.ms_session;
+async function current(req, portal = "user") {
+  const names = portalCookieNames(portal);
+  const raw = req.cookies[names.session];
   if (!raw) return null;
   const id = hash(raw);
   const session = await get("sessions/" + id);
   if (!session || session.revoked || Number(session.expiresAt) <= now()) return null;
   const user = await get("users/" + session.userId);
   if (!user || user.status !== "ACTIVE") return null;
-  return { id, session, user, userId: session.userId };
+  // Keep administrator and customer identities confined to their own portal.
+  if (portal === "admin" && user.role !== "admin") return null;
+  if (portal !== "admin" && user.role === "admin") return null;
+  return { id, session, user, userId: session.userId, portal };
 }
 
-async function guard(req, res) {
-  const auth = await current(req);
+async function guard(req, res, portal = "user") {
+  const auth = await current(req, portal);
   if (!auth) {
     res.status(401).json({ error: "Authentication required" });
     return null;
@@ -324,7 +339,7 @@ function requireCsrf(req, res, auth) {
 }
 
 async function adminGuard(req, res) {
-  const auth = await guard(req, res);
+  const auth = await guard(req, res, "admin");
   if (!auth) return null;
   if (auth.user.role !== "admin") {
     res.status(403).json({ error: "Admin access required" });
@@ -714,7 +729,7 @@ router.post("/auth/login", async (req, res) => {
 
     await update("users/" + userId, { lastLoginAt: now(), updatedAt: now() });
     const session = await createSession(userId);
-    setSession(res, session);
+    setSession(res, session, user.role === "admin" ? "admin" : "user");
     res.json({
       ok: true,
       user: { name: user.name, email: user.email, role: user.role, mustChangePassword: Boolean(user.mustChangePassword) },
@@ -856,16 +871,20 @@ router.post("/auth/reset-password", async (req, res) => {
 });
 
 router.post("/auth/logout", async (req, res) => {
-  const auth = await current(req);
+  const portal = requestPortal(req);
+  const names = portalCookieNames(portal);
+  const auth = await current(req, portal);
   if (auth) await update("sessions/" + auth.id, { revoked: true, revokedAt: now() });
-  res.clearCookie("ms_session", { path: "/" });
-  res.clearCookie("ms_csrf", { path: "/" });
-  res.json({ ok: true });
+  res.clearCookie(names.session, { path: "/" });
+  res.clearCookie(names.csrf, { path: "/" });
+  res.json({ ok: true, portal });
 });
 
 router.get("/auth/me", async (req, res) => {
   try {
-    const auth = await current(req);
+    const portal = requestPortal(req);
+    const names = portalCookieNames(portal);
+    const auth = await current(req, portal);
     if (!auth) return res.status(401).json({ error: "Not logged in" });
     res.json({
       user: {
@@ -875,7 +894,8 @@ router.get("/auth/me", async (req, res) => {
         role: auth.user.role,
         mustChangePassword: Boolean(auth.user.mustChangePassword)
       },
-      csrfToken: req.cookies.ms_csrf || auth.session.csrf || ""
+      csrfToken: req.cookies[names.csrf] || auth.session.csrf || "",
+      portal
     });
   } catch (e) {
     res.status(500).json({ error: "Authentication check failed" });
