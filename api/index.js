@@ -962,9 +962,9 @@ router.post("/admin/storage-cors", async (req, res) => {
 
 const STORAGE_UPLOADS = {
   "application/pdf": { folder: "ebooks", max: 100 * 1024 * 1024, ext: "pdf" },
-  "image/jpeg": { folder: "covers", max: 10 * 1024 * 1024, ext: "jpg" },
-  "image/png": { folder: "covers", max: 10 * 1024 * 1024, ext: "png" },
-  "image/webp": { folder: "covers", max: 10 * 1024 * 1024, ext: "webp" }
+  "image/jpeg": { folder: "covers", max: 5 * 1024 * 1024, ext: "jpg" },
+  "image/png": { folder: "covers", max: 5 * 1024 * 1024, ext: "png" },
+  "image/webp": { folder: "covers", max: 350 * 1024, ext: "webp" }
 };
 
 function storageUploadSpec(type) {
@@ -981,6 +981,7 @@ router.post("/admin/upload-url", async (req, res) => {
     if (!auth || !requireCsrf(req, res, auth)) return;
     const { name, type, size } = req.body || {};
     const spec = storageUploadSpec(type);
+    if (type !== "application/pdf" && type !== "image/webp") return res.status(400).json({ error: "Cover images must be compressed to WebP before upload." });
     if (!name) return res.status(400).json({ error: "File name is required" });
     if (!spec) return res.status(400).json({ error: "Unsupported file type. Use PDF, JPG, PNG, or WEBP." });
     if (!Number.isFinite(Number(size)) || Number(size) <= 0) return res.status(400).json({ error: "Invalid file size" });
@@ -1155,6 +1156,7 @@ router.post("/sadmin/upload-url", async (req, res) => {
     if (!auth || !requireCsrf(req, res, auth)) return;
     const { name, type, size } = req.body || {};
     const spec = storageUploadSpec(type);
+    if (type !== "application/pdf" && type !== "image/webp") return res.status(400).json({ error: "Cover images must be compressed to WebP before upload." });
     if (!name || !spec || !Number.isFinite(Number(size)) || Number(size) <= 0 || Number(size) > spec.max) return res.status(400).json({ error: "Invalid file or unsupported upload type." });
     const r2 = requireR2();
     const extension = spec.ext;
@@ -1188,7 +1190,7 @@ router.post("/sadmin/books", async (req, res) => {
       r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.coverPath }))
     ]);
     if (Number(pdfMeta.ContentLength || 0) <= 0 || Number(pdfMeta.ContentLength || 0) > STORAGE_UPLOADS["application/pdf"].max || String(pdfMeta.ContentType || "").toLowerCase() !== "application/pdf") fail(400, "PDF upload could not be verified.");
-    if (Number(coverMeta.ContentLength || 0) <= 0 || Number(coverMeta.ContentLength || 0) > 10 * 1024 * 1024 || !["image/jpeg","image/png","image/webp"].includes(String(coverMeta.ContentType || "").toLowerCase())) fail(400, "Cover upload could not be verified.");
+    if (Number(coverMeta.ContentLength || 0) <= 0 || Number(coverMeta.ContentLength || 0) > STORAGE_UPLOADS["image/webp"].max || String(coverMeta.ContentType || "").toLowerCase() !== "image/webp") fail(400, "Cover must be a compressed WebP image under 350 KB.");
     const db = requireDb();
     const id = db.ref("books").push().key;
     await set("books/" + id, { ...book, status: "PENDING_REVIEW", createdAt: now(), updatedAt: now(), createdBy: auth.userId, submittedByRole: "sadmin" });
@@ -1231,7 +1233,7 @@ router.post("/admin/books", async (req, res) => {
     const pdfSize = Number(pdfMeta.ContentLength || 0);
     const coverSize = Number(coverMeta.ContentLength || 0);
     if (pdfSize <= 0 || pdfSize > STORAGE_UPLOADS["application/pdf"].max || String(pdfMeta.ContentType || "").toLowerCase() !== "application/pdf") fail(400, "PDF upload could not be verified in R2.");
-    if (coverSize <= 0 || coverSize > 10 * 1024 * 1024 || !["image/jpeg","image/png","image/webp"].includes(String(coverMeta.ContentType || "").toLowerCase())) fail(400, "Cover upload could not be verified in R2.");
+    if (coverSize <= 0 || coverSize > STORAGE_UPLOADS["image/webp"].max || String(coverMeta.ContentType || "").toLowerCase() !== "image/webp") fail(400, "Cover must be a compressed WebP image under 350 KB.");
     const db = requireDb();
     const id = db.ref("books").push().key;
     await set("books/" + id, { ...book, status: "ACTIVE", createdAt: now(), updatedAt: now(), createdBy: auth.user.email });
