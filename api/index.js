@@ -1606,7 +1606,11 @@ router.post("/support/complaints", async (req, res) => {
     } catch (mailError) {
       console.warn("Complaint email notification failed:", mailError.message);
     }
-    await update("supportComplaints/" + complaintId, { emailNotificationStatus, updatedAt: now() });
+    try {
+      await update("supportComplaints/" + complaintId, { emailNotificationStatus, updatedAt: now() });
+    } catch (statusError) {
+      console.warn("Complaint notification status update failed:", statusError.message);
+    }
     await audit("SUPPORT_COMPLAINT_CREATED", auth, { complaintId, category, bookId: bookId || null, orderId: orderId || null, emailNotificationStatus });
     res.status(201).json({ ok: true, complaintId, status: "OPEN", message: "Complaint submitted. Please keep your complaint ID for follow-up.", emailNotificationStatus });
   } catch (e) {
