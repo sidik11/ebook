@@ -254,6 +254,22 @@ function AdminPanel() {
     }
   };
 
+  const issueVerifiedRefund = async complaint => {
+    const resolutionNote = String(complaintNotes[complaint.id] || complaint.resolutionNote || "").trim();
+    if (resolutionNote.length < 5) { showNotice("error", "Add a review note explaining why this refund is approved."); return; }
+    if (!complaint.paymentId && !window.confirm("No payment ID is saved on the complaint. Continue only if you have verified the correct Razorpay payment ID.")) return;
+    const paymentId = complaint.paymentId || window.prompt("Enter the verified Razorpay payment ID (pay_…):");
+    if (!paymentId) return;
+    if (!window.confirm("This will submit a real refund request to Razorpay after payment verification. Continue?")) return;
+    setComplaintBusyId(complaint.id);
+    try {
+      const result = await api("/api/admin/complaints/" + encodeURIComponent(complaint.id) + "/refund", { method: "POST", body: JSON.stringify({ paymentId, resolutionNote }) });
+      setComplaints(current => current.map(item => item.id === complaint.id ? { ...item, status: "REFUND_ISSUED", refund: result.refund, resolutionNote, updatedAt: Date.now() } : item));
+      showNotice("success", "Razorpay refund " + (result.refund?.id || "") + " submitted. Status: " + (result.refund?.status || "submitted") + ".");
+    } catch(err) { showNotice("error", err.message || "Refund request failed."); }
+    finally { setComplaintBusyId(""); }
+  };
+
   const updateUploadState = (kind, patch) => {
     setUploadState(previous => ({
       ...previous,
@@ -963,7 +979,7 @@ function AdminPanel() {
               <SectionHeading
                 eyebrow="CUSTOMER SUPPORT"
                 title={"Customer complaints · " + complaints.length}
-                subtitle="Review payment and access issues. Refunds must be processed separately in your payment provider; changing this status only records your support decision."
+                subtitle="Review each complaint. Refunds are only submitted to Razorpay after you explicitly approve them here and the API verifies the captured payment."
               />
               <div className="admin-user-toolbar">
                 <div className="admin-search-wrap">
@@ -1014,7 +1030,7 @@ function AdminPanel() {
                         <div className="admin-complaint-actions">
                           <button className="admin-secondary" disabled={complaintBusyId === item.id || item.status === "UNDER_REVIEW"} onClick={() => updateComplaintStatus(item, "UNDER_REVIEW")}>{complaintBusyId === item.id ? "Saving…" : "Mark under review"}</button>
                           <button className="admin-secondary" disabled={complaintBusyId === item.id || item.status === "RESOLVED"} onClick={() => updateComplaintStatus(item, "RESOLVED")}>Mark resolved</button>
-                          <button className="admin-primary" disabled={complaintBusyId === item.id || item.status === "REFUND_ISSUED"} onClick={() => updateComplaintStatus(item, "REFUND_ISSUED")}>Mark refund issued</button>
+                          <button className="admin-primary" disabled={complaintBusyId === item.id || item.status === "REFUND_ISSUED" || Boolean(item.refund?.id)} onClick={() => issueVerifiedRefund(item)}>{complaintBusyId === item.id ? "Verifying…" : "Verify & issue refund"}</button>
                           <button className="admin-user-action block" disabled={complaintBusyId === item.id || item.status === "REJECTED"} onClick={() => updateComplaintStatus(item, "REJECTED")}>Reject</button>
                           {item.userEmail && <a className="admin-complaint-email" href={"mailto:" + encodeURIComponent(item.userEmail) + "?subject=" + encodeURIComponent("MS Tech EBook complaint " + item.id)}>Email customer</a>}
                         </div>
