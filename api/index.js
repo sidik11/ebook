@@ -273,13 +273,14 @@ async function createSession(userId) {
 const isProduction = process.env.NODE_ENV === "production" && !process.env.DEV_MODE;
 
 function portalCookieNames(portal = "user") {
-  return portal === "admin"
-    ? { session: "ms_admin_session", csrf: "ms_admin_csrf" }
-    : { session: "ms_session", csrf: "ms_csrf" };
+  if (portal === "admin") return { session: "ms_admin_session", csrf: "ms_admin_csrf" };
+  if (portal === "sadmin") return { session: "ms_sadmin_session", csrf: "ms_sadmin_csrf" };
+  return { session: "ms_session", csrf: "ms_csrf" };
 }
 
 function requestPortal(req) {
-  return String(req.query?.portal || "").toLowerCase() === "admin" ? "admin" : "user";
+  const p = String(req.query?.portal || req.body?.portal || "").toLowerCase();
+  return p === "admin" ? "admin" : p === "sadmin" ? "sadmin" : "user";
 }
 
 function setSession(res, session, portal = "user") {
@@ -311,7 +312,8 @@ async function current(req, portal = "user") {
   if (!user || user.status !== "ACTIVE") return null;
   // Keep administrator and customer identities confined to their own portal.
   if (portal === "admin" && user.role !== "admin") return null;
-  if (portal !== "admin" && user.role === "admin") return null;
+  if (portal === "sadmin" && user.role !== "sadmin") return null;
+  if (portal === "user" && ["admin", "sadmin"].includes(user.role)) return null;
   return { id, session, user, userId: session.userId, portal };
 }
 
@@ -343,6 +345,15 @@ async function adminGuard(req, res) {
   if (!auth) return null;
   if (auth.user.role !== "admin") {
     res.status(403).json({ error: "Admin access required" });
+    return null;
+  }
+  return auth;
+}
+async function sadminGuard(req, res) {
+  const auth = await guard(req, res, "sadmin");
+  if (!auth) return null;
+  if (auth.user.role !== "sadmin") {
+    res.status(403).json({ error: "Sub-admin access required" });
     return null;
   }
   return auth;
@@ -699,7 +710,7 @@ router.post("/auth/login", async (req, res) => {
   try {
     await enforceRateLimit(req, "login", RATE_LIMITS.login);
     const { email: rawEmail, password, otp } = req.body || {};
-    const portal = req.body?.portal === "admin" ? "admin" : "user";
+    const portal = ["admin", "sadmin"].includes(String(req.body?.portal || "")) ? String(req.body.portal) : "user";
     const login = String(rawEmail || "").trim().toLowerCase();
     let userId;
     let user;
@@ -715,7 +726,7 @@ router.post("/auth/login", async (req, res) => {
       user = found?.user;
     } else if (validAdminId(login)) {
       const candidate = await get("users/" + login);
-      if (candidate?.role === "admin") {
+      if (candidate && ["admin", "sadmin"].includes(candidate.role)) {
         userId = login;
         user = candidate;
       }
@@ -726,14 +737,11 @@ router.post("/auth/login", async (req, res) => {
     if (!user || user.status !== "ACTIVE" || typeof password !== "string" || !passwordOK(password, user.passwordHash)) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
-    if (portal === "admin" && user.role !== "admin") {
-      return res.status(403).json({ error: "Administrator credentials required." });
-    }
-    if (portal === "user" && user.role === "admin") {
-      return res.status(403).json({ error: "Use the administrator portal to sign in." });
-    }
+    if (portal === "admin" && user.role !== "admin") return res.status(403).json({ error: "Administrator credentials required." });
+    if (portal === "sadmin" && user.role !== "sadmin") return res.status(403).json({ error: "Sub-admin credentials required." });
+    if (portal === "user" && ["admin", "sadmin"].includes(user.role)) return res.status(403).json({ error: "Use the correct staff portal to sign in." });
 
-    const firstLogin = user.role === "admin" && user.mustChangePassword === true;
+    const firstLogin = ["admin", "sadmin"].includes(user.role) && user.mustChangePassword === true;
     if (user.role === "admin" && !firstLogin && process.env.ADMIN_TOTP_SECRET) {
       if (!verifyTotp(String(process.env.ADMIN_TOTP_SECRET), String(otp || ""))) {
         return res.status(401).json({ error: "Admin verification code required", code: "ADMIN_OTP_REQUIRED" });
@@ -742,7 +750,7 @@ router.post("/auth/login", async (req, res) => {
 
     await update("users/" + userId, { lastLoginAt: now(), updatedAt: now() });
     const session = await createSession(userId);
-    setSession(res, session, user.role === "admin" ? "admin" : "user");
+    setSession(res, session, user.role === "admin" ? "admin" : user.role === "sadmin" ? "sadmin" : "user");
     res.json({
       ok: true,
       user: { name: user.name, email: user.email, role: user.role, mustChangePassword: Boolean(user.mustChangePassword) },
@@ -1035,6 +1043,99 @@ function normalizeBookInput(body) {
   };
 }
 
+router.post("/admin/subadmins", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const subAdminId = safeText(req.body?.userId, 64);
+    const password = req.body?.password;
+    const name = safeText(req.body?.name || "Book Uploader", 120);
+    if (!validAdminId(subAdminId)) return res.status(400).json({ error: "User ID must be 3-64 characters using letters, numbers, _ or -." });
+    if (!validPassword(password)) return res.status(400).json({ error: "Password must be 10-128 characters and include uppercase, lowercase, and a number." });
+    const existing = await get("users/" + subAdminId);
+    if (existing) return res.status(409).json({ error: "That user ID is already in use." });
+    const user = { name, email: null, passwordHash: passwordHash(password), role: "sadmin", status: "ACTIVE", mustChangePassword: true, createdAt: now(), createdBy: auth.userId, updatedAt: now() };
+    await set("users/" + subAdminId, user);
+    await audit("SUBADMIN_CREATED", auth, { subAdminId });
+    res.status(201).json({ ok: true, user: { id: subAdminId, name, role: "sadmin", mustChangePassword: true } });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create sub-admin" }); }
+});
+
+router.get("/sadmin/books", async (req, res) => {
+  try {
+    const auth = await sadminGuard(req, res);
+    if (!auth) return;
+    const books = await listBooks(false, 200);
+    res.set("Cache-Control", "no-store, max-age=0");
+    res.json({ books: await Promise.all(books.map(async b => ({ id: b.id, title: b.data.title, author: b.data.author, category: b.data.category, type: b.data.type, price: b.data.price, status: b.data.status, createdAt: b.data.createdAt, coverUrl: b.data.coverPath ? await publicBook(b.id, b.data).then(p => p.coverUrl) : null }))) });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message || "Could not load catalogue" }); }
+});
+
+router.post("/sadmin/upload-url", async (req, res) => {
+  try {
+    const auth = await sadminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const { name, type, size } = req.body || {};
+    const spec = storageUploadSpec(type);
+    if (!name || !spec || !Number.isFinite(Number(size)) || Number(size) <= 0 || Number(size) > spec.max) return res.status(400).json({ error: "Invalid file or unsupported upload type." });
+    const r2 = requireR2();
+    const extension = spec.extension;
+    const storagePath = "private/" + (type === "application/pdf" ? "ebooks/" : "covers/") + crypto.randomUUID() + "." + extension;
+    const command = new PutObjectCommand({ Bucket: r2.bucket, Key: storagePath, ContentType: type });
+    const url = await getSignedUrl(r2.client, command, { expiresIn: 300 });
+    res.json({ url, path: storagePath });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not prepare upload" }); }
+});
+
+router.get("/sadmin/upload-status", async (req, res) => {
+  try {
+    const auth = await sadminGuard(req, res);
+    if (!auth) return;
+    const storagePath = safeText(req.query.path, 500);
+    if (!isR2Path(storagePath)) return res.status(400).json({ error: "Invalid storage path" });
+    const r2 = requireR2();
+    const meta = await r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: storagePath }));
+    res.json({ uploaded: true, size: Number(meta.ContentLength || 0), contentType: meta.ContentType || "" });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Upload not verified" }); }
+});
+
+router.post("/sadmin/books", async (req, res) => {
+  try {
+    const auth = await sadminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const book = normalizeBookInput(req.body || {});
+    const r2 = requireR2();
+    const [pdfMeta, coverMeta] = await Promise.all([
+      r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.storagePath })),
+      r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: book.coverPath }))
+    ]);
+    if (Number(pdfMeta.ContentLength || 0) <= 0 || Number(pdfMeta.ContentLength || 0) > STORAGE_UPLOADS["application/pdf"].max || String(pdfMeta.ContentType || "").toLowerCase() !== "application/pdf") fail(400, "PDF upload could not be verified.");
+    if (Number(coverMeta.ContentLength || 0) <= 0 || Number(coverMeta.ContentLength || 0) > 10 * 1024 * 1024 || !["image/jpeg","image/png","image/webp"].includes(String(coverMeta.ContentType || "").toLowerCase())) fail(400, "Cover upload could not be verified.");
+    const db = requireDb();
+    const id = db.ref("books").push().key;
+    await set("books/" + id, { ...book, status: "PENDING_REVIEW", createdAt: now(), updatedAt: now(), createdBy: auth.userId, submittedByRole: "sadmin" });
+    await audit("BOOK_SUBMITTED_FOR_REVIEW", auth, { bookId: id });
+    res.status(201).json({ ok: true, id, status: "PENDING_REVIEW" });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Book could not be submitted" }); }
+});
+
+router.patch("/admin/books/:id/review", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const id = key(req.params.id);
+    const book = await get("books/" + id);
+    if (!book || book.status !== "PENDING_REVIEW") return res.status(404).json({ error: "Pending book not found" });
+    const decision = safeText(req.body?.decision, 20).toUpperCase();
+    const note = safeText(req.body?.note, 1000);
+    if (!["APPROVE", "REJECT"].includes(decision)) return res.status(400).json({ error: "Choose approve or reject." });
+    if (decision === "REJECT" && note.length < 5) return res.status(400).json({ error: "Add a rejection reason of at least 5 characters." });
+    await update("books/" + id, { status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: now(), reviewedBy: auth.userId, reviewNote: note || null, updatedAt: now() });
+    await audit(decision === "APPROVE" ? "BOOK_APPROVED" : "BOOK_REJECTED", auth, { bookId: id });
+    res.json({ ok: true, status: decision === "APPROVE" ? "ACTIVE" : "REJECTED" });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Review action failed" }); }
+});
+
 router.post("/admin/books", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
@@ -1326,11 +1427,11 @@ router.patch("/admin/complaints/:id", async (req, res) => {
     const complaintId = key(req.params.id);
     const complaint = await get("supportComplaints/" + complaintId);
     if (!complaint) return res.status(404).json({ error: "Complaint not found" });
-    const allowedStatuses = new Set(["OPEN", "UNDER_REVIEW", "RESOLVED", "REFUND_ISSUED", "REJECTED"]);
+    const allowedStatuses = new Set(["OPEN", "UNDER_REVIEW", "RESOLVED", "REJECTED"]);
     const status = safeText(req.body?.status, 30).toUpperCase();
     const resolutionNote = safeText(req.body?.resolutionNote, 1000);
     if (!allowedStatuses.has(status)) return res.status(400).json({ error: "Invalid complaint status" });
-    if (["RESOLVED", "REFUND_ISSUED", "REJECTED"].includes(status) && resolutionNote.length < 5) {
+    if (["RESOLVED", "REJECTED"].includes(status) && resolutionNote.length < 5) {
       return res.status(400).json({ error: "Add a resolution note of at least 5 characters before closing this complaint." });
     }
     const timestamp = now();
@@ -1339,7 +1440,7 @@ router.patch("/admin/complaints/:id", async (req, res) => {
       resolutionNote: resolutionNote || null,
       updatedAt: timestamp,
       updatedBy: auth.user.email,
-      ...(["RESOLVED", "REFUND_ISSUED", "REJECTED"].includes(status) ? { resolvedAt: timestamp, resolvedBy: auth.user.email } : { resolvedAt: null, resolvedBy: null })
+      ...(["RESOLVED", "REJECTED"].includes(status) ? { resolvedAt: timestamp, resolvedBy: auth.user.email } : { resolvedAt: null, resolvedBy: null })
     });
     await audit("SUPPORT_COMPLAINT_UPDATED", auth, { complaintId, status });
     res.json({ ok: true, status });
@@ -1456,7 +1557,7 @@ router.post("/orders/create", async (req, res) => {
     lockToken = randomToken();
     const lockTx = await requireDb().ref(lockPath).transaction(current => {
       if (current && Number(current.expiresAt || 0) > now()) return;
-      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 15 * 60 * 1000 };
+      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 5 * 60 * 1000 };
     });
     if (!lockTx.committed) {
       return res.status(409).json({ error: "A checkout for this ebook is already in progress. Wait a few minutes, then check My Library before trying again." });
@@ -1472,7 +1573,7 @@ router.post("/orders/create", async (req, res) => {
       userId: auth.userId, bookId, amountPaise: order.amount, amount: Number(book.price),
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
-    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 15 * 60 * 1000 });
+    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 5 * 60 * 1000 });
     res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title });
   } catch (e) {
     if (lockPath && lockToken) {
