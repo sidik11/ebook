@@ -232,7 +232,7 @@ function safeText(value, max) {
 }
 
 function isValidDateOnly(value) {
-  const dateOnly = safeText(value, 10);
+  const dateOnly = String(value ?? "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return false;
   const parsed = new Date(dateOnly + "T00:00:00.000Z");
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === dateOnly;
@@ -1215,7 +1215,7 @@ router.patch("/admin/books/:id/review", async (req, res) => {
     const decision = safeText(req.body?.decision, 20).toUpperCase();
     const note = safeText(req.body?.note, 1000);
     const category = safeText(req.body?.category, 80);
-    const publishedDate = safeText(req.body?.publishedDate, 10);
+    const publishedDate = String(req.body?.publishedDate ?? "").trim();
     if (!["APPROVE", "REJECT"].includes(decision)) return res.status(400).json({ error: "Choose approve or reject." });
     if (decision === "APPROVE" && !category) return res.status(400).json({ error: "Choose a category before publishing this book." });
     if (decision === "APPROVE" && !isValidDateOnly(publishedDate)) return res.status(400).json({ error: "Choose a valid published date before publishing this book." });
@@ -1238,7 +1238,7 @@ router.post("/admin/books", async (req, res) => {
     if (!auth || !requireCsrf(req, res, auth)) return;
     const book = normalizeBookInput(req.body || {});
     if (!book.category) fail(400, "Choose or enter a category before publishing.");
-    const publishedDate = safeText(req.body?.publishedDate, 10);
+    const publishedDate = String(req.body?.publishedDate ?? "").trim();
     if (!isValidDateOnly(publishedDate)) fail(400, "Choose a valid published date before publishing.");
     const r2 = requireR2();
     const [pdfMeta, coverMeta] = await Promise.all([
@@ -1644,7 +1644,7 @@ router.patch("/admin/books/:id", async (req, res) => {
       updatedAt: now(), updatedBy: auth.user.email
     };
     if (Object.prototype.hasOwnProperty.call(req.body || {}, "publishedDate")) {
-      const publishedDate = safeText(req.body.publishedDate, 10);
+      const publishedDate = String(req.body.publishedDate ?? "").trim();
       if (!isValidDateOnly(publishedDate)) return res.status(400).json({ error: "Choose a valid published date." });
       changes.publishedDate = publishedDate;
     }
