@@ -466,7 +466,24 @@ function getRazorpay() {
   return new Razorpay({ key_id, key_secret });
 }
 
-// Global Security, CORS & Preflight Middleware
+// Global Security, fail-closed CORS & preflight middleware.
+const configuredPublicOrigin = (() => {
+  const raw = String(process.env.PUBLIC_ORIGIN || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.origin !== raw.replace(/\/+$/, "")) {
+      throw new Error("PUBLIC_ORIGIN must be an origin only (scheme + host + optional port), without a path.");
+    }
+    return parsed.origin;
+  } catch (error) {
+    throw new Error("Invalid PUBLIC_ORIGIN configuration: " + error.message);
+  }
+})();
+if (isProduction && !configuredPublicOrigin) {
+  throw new Error("PUBLIC_ORIGIN is required in production. Set it to the exact deployed frontend origin.");
+}
+
 app.use((req, res, next) => {
   res.set("X-Content-Type-Options", "nosniff");
   res.set("X-Frame-Options", "SAMEORIGIN");
@@ -476,28 +493,24 @@ app.use((req, res, next) => {
   res.set("Cache-Control", req.path.includes("/api/") ? "no-store" : "public, max-age=60");
 
   const origin = req.get("origin");
-  if (origin) {
-    const expected = process.env.PUBLIC_ORIGIN ? process.env.PUBLIC_ORIGIN.replace(/\/+$/, "") : null;
-    const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-    if (isLocal || !expected || origin === expected) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, Authorization, X-Admin-Setup-Key");
-    }
+  const isLocal = !isProduction && Boolean(origin) && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+  const originAllowed = !origin || isLocal || (configuredPublicOrigin && origin === configuredPublicOrigin);
+
+  if (!originAllowed) {
+    return req.method === "OPTIONS"
+      ? res.status(403).end()
+      : res.status(403).json({ error: "Origin not allowed" });
   }
 
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
+  if (origin && (isLocal || configuredPublicOrigin && origin === configuredPublicOrigin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, Authorization, X-Admin-Setup-Key");
   }
 
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    const expected = process.env.PUBLIC_ORIGIN ? process.env.PUBLIC_ORIGIN.replace(/\/+$/, "") : null;
-    const isLocal = origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-    if (expected && origin && origin !== expected && !isLocal) {
-      return res.status(403).json({ error: "Origin not allowed" });
-    }
-  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
@@ -1358,6 +1371,8 @@ router.delete("/admin/books/:id", async (req, res) => {
 });
 
 router.post("/orders/create", async (req, res) => {
+  let lockPath = "";
+  let lockToken = "";
   try {
     const auth = await guard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
@@ -1366,8 +1381,21 @@ router.post("/orders/create", async (req, res) => {
     if (!book || book.status !== "ACTIVE") return res.status(404).json({ error: "Book not found" });
     const pricePaise = amountPaise(book.price);
     if (book.type === "FREE" || !pricePaise) return res.status(400).json({ error: "This ebook is free. No payment is required" });
+    const purchaseId = hash(auth.userId + ":" + bookId);
     const purchase = await owned(auth.userId, bookId);
     if (purchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
+
+    // A per-user/per-book RTDB transaction prevents concurrent tabs from
+    // creating multiple active Razorpay orders for the same ebook.
+    lockPath = "checkoutLocks/" + purchaseId;
+    lockToken = randomToken();
+    const lockTx = await requireDb().ref(lockPath).transaction(current => {
+      if (current && Number(current.expiresAt || 0) > now()) return;
+      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 15 * 60 * 1000 };
+    });
+    if (!lockTx.committed) {
+      return res.status(409).json({ error: "A checkout for this ebook is already in progress. Wait a few minutes, then check My Library before trying again." });
+    }
 
     const razorpay = getRazorpay();
     const order = await razorpay.orders.create({
@@ -1379,8 +1407,14 @@ router.post("/orders/create", async (req, res) => {
       userId: auth.userId, bookId, amountPaise: order.amount, amount: Number(book.price),
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
+    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 15 * 60 * 1000 });
     res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title });
   } catch (e) {
+    if (lockPath && lockToken) {
+      try {
+        await requireDb().ref(lockPath).transaction(current => current?.token === lockToken ? null : undefined);
+      } catch {}
+    }
     res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create order" });
   }
 });
@@ -1393,24 +1427,51 @@ async function finalizePayment(paymentId, orderId) {
   if (payment.order_id !== orderId || payment.status !== "captured" || Number(payment.amount) !== Number(order.amountPaise)) {
     fail(400, "Payment verification failed");
   }
-  const purchaseId = hash(order.userId + ":" + order.bookId);
-  const existing = await get("purchases/" + purchaseId);
-  if (existing?.status === "PAID") return { alreadyProcessed: true };
-  const paymentEvent = await get("paymentEvents/" + paymentId);
-  if (paymentEvent?.status === "PROCESSED") return { alreadyProcessed: true };
 
   const db = requireDb();
-  await db.ref().update({
-    ["purchases/" + purchaseId]: {
+  const purchaseId = hash(order.userId + ":" + order.bookId);
+  const purchasePath = "purchases/" + purchaseId;
+  const eventPath = "paymentEvents/" + paymentId;
+  const priorEvent = await get(eventPath);
+  if (priorEvent?.status === "PROCESSED") return { alreadyProcessed: true };
+  if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
+
+  // The purchase record is the single atomic entitlement gate. Only one
+  // captured payment can claim it; parallel webhook/browser callbacks cannot
+  // overwrite the first payment's entitlement.
+  const purchaseTx = await db.ref(purchasePath).transaction(current => {
+    if (current?.status === "PAID") return;
+    return {
       userId: order.userId, bookId: order.bookId, orderId, paymentId,
       amount: order.amount, amountPaise: order.amountPaise, status: "PAID", purchasedAt: now()
-    },
-    ["orders/" + orderId + "/status"]: "PAID",
+    };
+  });
+  const currentPurchase = purchaseTx.snapshot.val();
+  const duplicateCaptured = !purchaseTx.committed && currentPurchase?.status === "PAID" && currentPurchase.paymentId !== paymentId;
+
+  // If a second distinct captured payment reached the gateway, preserve the
+  // original entitlement and mark the extra charge for explicit refund review.
+  const status = duplicateCaptured ? "DUPLICATE_CAPTURED" : "PAID";
+  const event = {
+    status: duplicateCaptured ? "DUPLICATE_CAPTURED" : "PROCESSED",
+    orderId, userId: order.userId, bookId: order.bookId, processedAt: now(),
+    refundStatus: duplicateCaptured ? "REVIEW_REQUIRED" : "NOT_REQUIRED",
+    ...(duplicateCaptured ? { duplicateOfPaymentId: currentPurchase.paymentId } : {})
+  };
+  const updates = {
+    ["orders/" + orderId + "/status"]: status,
     ["orders/" + orderId + "/paymentId"]: paymentId,
     ["orders/" + orderId + "/updatedAt"]: now(),
-    ["paymentEvents/" + paymentId]: { status: "PROCESSED", orderId, userId: order.userId, processedAt: now() }
-  });
-  return { alreadyProcessed: false };
+    [eventPath]: event,
+    ["checkoutLocks/" + purchaseId + "/status"]: "PAID",
+    ["checkoutLocks/" + purchaseId + "/updatedAt"]: now()
+  };
+  if (duplicateCaptured) {
+    updates["orders/" + orderId + "/refundStatus"] = "REVIEW_REQUIRED";
+    updates["orders/" + orderId + "/duplicateOfPaymentId"] = currentPurchase.paymentId;
+  }
+  await db.ref().update(updates);
+  return { alreadyProcessed: !purchaseTx.committed && !duplicateCaptured, duplicateCaptured };
 }
 
 router.post("/orders/verify", async (req, res) => {
@@ -1427,8 +1488,14 @@ router.post("/orders/verify", async (req, res) => {
     if (expected.length !== String(razorpay_signature).length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(String(razorpay_signature)))) {
       return res.status(403).json({ error: "Payment verification failed" });
     }
-    await finalizePayment(razorpay_payment_id, razorpay_order_id);
-    res.json({ ok: true });
+    const finalization = await finalizePayment(razorpay_payment_id, razorpay_order_id);
+    res.json({
+      ok: true,
+      duplicateCaptured: Boolean(finalization.duplicateCaptured),
+      message: finalization.duplicateCaptured
+        ? "This payment was captured but another payment already unlocked the book. The extra charge has been flagged for refund review."
+        : "Payment verified successfully."
+    });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Payment verification failed" });
   }
@@ -1452,6 +1519,78 @@ router.post("/webhooks/razorpay", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Webhook processing failed" });
+  }
+});
+
+router.post("/support/complaints", async (req, res) => {
+  try {
+    await enforceRateLimit(req, "complaint", 5);
+    const auth = await guard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const allowedCategories = new Set(["BOOK_NOT_UNLOCKED", "DUPLICATE_CHARGE", "PAYMENT_ISSUE", "OTHER"]);
+    const category = safeText(req.body?.category, 40).toUpperCase();
+    const message = safeText(req.body?.message, 2000);
+    let bookId = req.body?.bookId ? key(req.body.bookId) : "";
+    let orderId = safeText(req.body?.orderId, 100);
+    let paymentId = safeText(req.body?.paymentId, 100);
+
+    if (!allowedCategories.has(category) || message.length < 10) {
+      return res.status(400).json({ error: "Choose a complaint type and provide at least 10 characters of detail." });
+    }
+    if (orderId) {
+      const order = await get("orders/" + key(orderId));
+      if (!order || order.userId !== auth.userId) return res.status(403).json({ error: "Order not found for this account." });
+      bookId = bookId || order.bookId;
+      paymentId = paymentId || order.paymentId || "";
+    }
+    if (paymentId) {
+      const event = await get("paymentEvents/" + key(paymentId));
+      if (event && event.userId !== auth.userId) return res.status(403).json({ error: "Payment does not belong to this account." });
+      if (event) {
+        orderId = orderId || event.orderId || "";
+        bookId = bookId || event.bookId || "";
+      }
+    }
+    if (bookId) {
+      const book = await get("books/" + bookId);
+      if (!book) return res.status(404).json({ error: "Book not found." });
+      if (!orderId) {
+        const ordersSnap = await requireDb().ref("orders").orderByChild("userId").equalTo(auth.userId).once("value");
+        let latest = null;
+        ordersSnap.forEach(child => {
+          const item = child.val() || {};
+          if (item.bookId === bookId && (!latest || Number(item.createdAt || 0) > Number(latest.createdAt || 0))) {
+            latest = { ...item, id: child.key };
+          }
+        });
+        if (latest) {
+          orderId = latest.id;
+          paymentId = paymentId || latest.paymentId || "";
+        }
+      }
+    }
+
+    const db = requireDb();
+    const ref = db.ref("supportComplaints").push();
+    const complaintId = ref.key;
+    await ref.set({
+      id: complaintId,
+      userId: auth.userId,
+      userEmail: auth.user.email,
+      userName: auth.user.name,
+      category,
+      message,
+      bookId: bookId || null,
+      orderId: orderId || null,
+      paymentId: paymentId || null,
+      status: "OPEN",
+      createdAt: now(),
+      updatedAt: now()
+    });
+    await audit("SUPPORT_COMPLAINT_CREATED", auth, { complaintId, category, bookId: bookId || null, orderId: orderId || null });
+    res.status(201).json({ ok: true, complaintId, status: "OPEN", message: "Complaint submitted. Please keep your complaint ID for follow-up." });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not submit complaint. Please email support." });
   }
 });
 
