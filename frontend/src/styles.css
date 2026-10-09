@@ -89,7 +89,7 @@ footer{background:rgba(8,11,20,.7)}
 .admin-account-chip span{font-size:9px;color:#68758e;margin-top:2px;max-width:145px}
 .admin-avatar{width:30px;height:30px;flex:0 0 30px;border-radius:50%;display:grid;place-items:center;background:#1b2340;color:#b5a9ff;font-weight:950;font-size:12px}
 .admin-main{min-width:0;padding:0 34px 65px}
-.admin-headerbar{min-height:82px;display:flex;align-items:center;justify-content:space-between;gap:18px;border-bottom:1px solid #20283b}
+.admin-headerbar{height:auto;min-height:82px;padding:0;position:relative;top:auto;z-index:auto;display:flex;align-items:center;justify-content:space-between;gap:18px;background:transparent;backdrop-filter:none;box-shadow:none;border-bottom:1px solid #20283b}
 .admin-header-left{display:flex;align-items:center;gap:11px}
 .admin-header-left h1{margin:2px 0 0;font-size:23px;letter-spacing:-.03em}
 .admin-header-kicker{font-size:9px;letter-spacing:.18em;font-weight:950;color:#8d7bff}
