@@ -1795,14 +1795,33 @@ router.post("/coupons/redeem-free", async (req, res) => {
         const entry = reservations[k] || {};
         if (!entry.userId || Number(entry.expiresAt || 0) <= redemptionTime || entry.userId === auth.userId) delete reservations[k];
       });
-      const activeReservations = Object.values(reservations).filter(entry => entry?.userId && Number(entry.expiresAt || 0) > redemptionTime).length;
-      if (Number(current.usedCount || 0) + activeReservations >= Number(current.maxUses || 0)) return;
+      // A stale reservation must not consume capacity if that account has
+      // already redeemed this coupon. Older code could leave such reservations
+      // behind when a request failed between entitlement and cleanup.
+      const activeReservations = Object.values(reservations).filter(entry => {
+        if (!entry?.userId || Number(entry.expiresAt || 0) <= redemptionTime) return false;
+        const reservationUserKey = hash(entry.userId);
+        return !redemptions[reservationUserKey];
+      }).length;
+      const maxUses = Number(current.maxUses || 0);
+      const usedCount = Number(current.usedCount || 0);
+      if (maxUses < 1 || usedCount + activeReservations >= maxUses) return;
       redemptions[userKey] = { userId: auth.userId, bookId, redeemedAt: redemptionTime };
       return { ...current, usedCount: Number(current.usedCount || 0) + 1, redemptions, reservations };
     });
     if (!couponTx.committed) {
-      const previous = couponTx.snapshot?.val()?.redemptions?.[userKey];
-      if (previous?.bookId !== bookId) return res.status(409).json({ error: "This coupon has reached its usage limit or is invalid." });
+      const current = couponTx.snapshot?.val() || {};
+      const previous = current.redemptions?.[userKey];
+      if (previous?.bookId !== bookId) {
+        if (current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= redemptionTime)) {
+          return res.status(409).json({ error: "This coupon is inactive or expired. Check its status and expiry in the admin panel." });
+        }
+        const currentDiscount = couponDiscount(current, Number(book.price || 0));
+        if (currentDiscount <= 0 || Math.max(0, basePricePaise - Math.round(currentDiscount * 100)) !== 0) {
+          return res.status(409).json({ error: "This coupon does not provide a 100% discount for this ebook." });
+        }
+        return res.status(409).json({ error: "This coupon has reached its usage limit. Check maximum uses and redeemed count in the admin panel." });
+      }
     }
     const coupon = couponTx.snapshot?.val() || await get("coupons/" + code);
     const discountRupees = couponDiscount(coupon, Number(book.price || 0));
