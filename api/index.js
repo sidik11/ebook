@@ -2186,14 +2186,26 @@ router.post("/orders/create", async (req, res) => {
       if (!couponTx.committed) {
         // Distinguish a truly exhausted coupon from a concurrent request that
         // already created this user's reservation for the same book.
-        const latest = couponTx.snapshot?.val();
-        const own = latest?.reservations || {};
-        const sameUserReservation = Object.values(own).some(entry =>
-          entry?.userId === auth.userId &&
-          entry?.bookId === bookId &&
-          Number(entry?.expiresAt || 0) > now()
-        );
-        if (!sameUserReservation) return res.status(409).json({ error: "This coupon has reached its usage limit. Another checkout may be holding the last available use; wait 30 minutes or try again." });
+        const latest = couponTx.snapshot?.val() || {};
+        const own = latest.reservations || {};
+        const sameUserReservation = Object.values(own).some(entry => {
+          const owner = couponReservationOwner(entry);
+          return (owner === auth.userId || owner === reservationKey) &&
+            entry?.bookId === bookId &&
+            couponReservationExpiryMs(entry) > now();
+        });
+        if (!sameUserReservation) {
+          const maxUses = Number(latest.maxUses || coupon?.maxUses || 0);
+          const recordedUses = couponRecordedUses(latest);
+          const activeReservations = couponLiveReservations(latest, now(), auth.userId);
+          if (recordedUses >= maxUses) {
+            return res.status(409).json({ error: "This coupon has reached its usage limit.", diagnostics: { configuredMaxUses: maxUses, recordedUses, activeReservations } });
+          }
+          if (activeReservations > 0) {
+            return res.status(409).json({ error: "This coupon is temporarily held by another checkout. Please retry after that checkout expires.", diagnostics: { configuredMaxUses: maxUses, recordedUses, activeReservations } });
+          }
+          return res.status(503).json({ error: "Coupon checkout was interrupted by a concurrent update. Please retry." });
+        }
       }
     }
     const purchase = await owned(auth.userId, bookId);
