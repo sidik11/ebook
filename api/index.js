@@ -2578,7 +2578,7 @@ app.use(async (req, res, next) => {
   const seoPath = String(req.query?.seoPath || "");
   if (req.method !== "GET" || !["/sitemap.xml", "/robots.txt"].includes(seoPath)) return next();
   try {
-    const origin = String(process.env.PUBLIC_ORIGIN || "https://ebook-one-jade.vercel.app").replace(/\/+$/, "");
+    const origin = String(process.env.PUBLIC_ORIGIN || "https://mstech-ebook.store").replace(/\/+$/, "");
     if (seoPath === "/robots.txt") {
       res.status(200);
       res.type("text/plain; charset=utf-8");
