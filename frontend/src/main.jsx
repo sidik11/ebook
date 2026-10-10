@@ -403,8 +403,8 @@ function Home() {
     <main className="hero">
       <div>
         <small style={{ letterSpacing: "2px", fontWeight: 700, color: "#9b8cff" }}>PREMIUM DIGITAL READING</small>
-        <h1>Read with <em>MS Tech EBook.</em></h1>
-        <p>Buy once. Keep your digital books forever in your personal cloud library.</p>
+        <h1>Discover, Buy, and Read Ebooks Online</h1>
+        <p>Explore digital books on MS Tech EBook, find titles by author or category, and keep your purchased ebooks in your personal online library.</p>
         <Link className="primary" to="/books" style={{ marginTop: "16px" }}>Browse Catalog</Link>
       </div>
       <section>
@@ -412,6 +412,12 @@ function Home() {
         {loading && <p style={{ color: "#8b949e" }}>Loading catalog...</p>}
         {error && <p className="error">{error}</p>}
         {!loading && !error && <Grid books={books.slice(0, 6)} />}
+        <p style={{ marginTop: "18px" }}>Looking for your next read? <Link to="/books">Browse the full ebook catalog</Link> to explore available titles, authors, categories, and prices. For help with purchases or access, visit <Link to="/support">customer support</Link>.</p>
+      </section>
+      <section aria-labelledby="ebook-store-guide" style={{ maxWidth: "900px", margin: "32px auto 0", padding: "0 16px" }}>
+        <h2 id="ebook-store-guide">Your Online Ebook Store</h2>
+        <p>MS Tech EBook is a digital bookstore where readers can discover ebook titles, review book details, and purchase available digital editions online. Each book page provides information to help you decide what to read before buying.</p>
+        <p>After signing in, you can access eligible purchases from your personal library. If you have a question about payment, a duplicate charge, or ebook access, use our <Link to="/support">support page</Link>. Please read the <Link to="/refund-policy">refund policy</Link> before making a digital purchase.</p>
       </section>
     </main>
   );
@@ -441,8 +447,9 @@ function Books() {
 
   return (
     <main className="container">
-      <h1>All Ebooks</h1>
-      {error && <p className="error">{error}</p>}
+      <h1>Browse Ebooks Online</h1>
+      <p>Explore the MS Tech EBook catalog by book title, author, or category. Open an ebook listing to review its description, publication details, and price before purchase.</p>
+      {error && <p className="error">{error}</p>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(180px, 260px)", gap: "12px", margin: "16px 0" }}>
         <input
           type="search"
