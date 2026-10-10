@@ -1733,13 +1733,20 @@ function couponDiscount(coupon, priceRupees) {
   const pricePaise = Math.round(price * 100);
   return couponDiscountPaise(coupon, pricePaise) / 100;
 }
+function couponPercent(coupon) {
+  // discountPercent is canonical. Read older aliases only for coupons created
+  // by pre-migration versions; all newly-created coupons store discountPercent.
+  const raw = coupon?.discountPercent ?? coupon?.discount_percentage ?? coupon?.percentage ?? coupon?.discount;
+  const percent = Number(raw);
+  return Number.isInteger(percent) && percent >= 5 && percent <= 100 ? percent : 0;
+}
 function couponDiscountPaise(coupon, pricePaise) {
-  const percent = Number(coupon?.discountPercent);
+  const percent = couponPercent(coupon);
   const price = Number(pricePaise);
-  if (!Number.isInteger(percent) || percent < 5 || percent > 100) return 0;
-  if (!Number.isSafeInteger(price) || price <= 0) return 0;
-  // Calculate only in integer paise to avoid decimal-rupee rounding mismatches.
-  return Math.min(Math.round(price * percent / 100), price);
+  if (!Number.isSafeInteger(price) || price <= 0 || !percent) return 0;
+  // A 100% coupon is exact by definition: never reject it due to rounding.
+  if (percent === 100) return price;
+  return Math.min(Math.floor((price * percent + 50) / 100), price);
 }
 // Accept legacy expiry timestamps in milliseconds, seconds, or ISO date strings.
 // Older records may have seconds-based timestamps; comparing those directly with
@@ -1785,7 +1792,7 @@ router.post("/coupons/validate", async (req, res) => {
     });
     if (Number(coupon.usedCount || 0) + active >= Number(coupon.maxUses || 0)) return res.status(409).json({ error: "This coupon has reached its usage limit." });
     const originalPrice = Number(book.price || 0), discount = couponDiscount(coupon, originalPrice);
-    res.set("Cache-Control", "no-store"); res.json({ ok: true, code, discountPercent: coupon.discountPercent, originalPrice, discount, finalPrice: Math.max(0, Math.round((originalPrice - discount) * 100) / 100) });
+    res.set("Cache-Control", "no-store"); res.json({ ok: true, code, discountPercent: couponPercent(coupon), originalPrice, discount, finalPrice: Math.max(0, Math.round((originalPrice - discount) * 100) / 100) });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not validate coupon." }); }
 });
 router.post("/coupons/redeem-free", async (req, res) => {
@@ -1896,7 +1903,7 @@ router.get("/admin/coupons", async (req, res) => {
     const users = {}, books = {}, useMap = {};
     usersSnap.forEach(n => users[n.key] = n.val() || {}); booksSnap.forEach(n => books[n.key] = n.val() || {});
     us.forEach(codeNode => { useMap[codeNode.key] = []; codeNode.forEach(n => { const u=n.val()||{}; useMap[codeNode.key].push({ id:n.key,userId:u.userId||"",email:users[u.userId]?.email||"",bookId:u.bookId||"",bookTitle:books[u.bookId]?.title||u.bookId||"",orderId:u.orderId||"",discount:Number(u.discount||0),paidAmount:Number(u.paidAmount||0),usedAt:u.usedAt||null }); }); });
-    const coupons=[]; cs.forEach(n=>{const c=n.val()||{};if(!c.code)return;coupons.push({code:n.key,discountPercent:Number(c.discountPercent||0),maxUses:Number(c.maxUses||0),usedCount:Number(c.usedCount||0),status:couponStatus(c),expiresAt:couponExpiryMs(c)||null,createdAt:c.createdAt||null,uses:(useMap[n.key]||[]).sort((a,b)=>Number(b.usedAt||0)-Number(a.usedAt||0))});});
+    const coupons=[]; cs.forEach(n=>{const c=n.val()||{};if(!c.code)return;coupons.push({code:n.key,discountPercent:couponPercent(c),maxUses:Number(c.maxUses||0),usedCount:Number(c.usedCount||0),status:couponStatus(c),expiresAt:couponExpiryMs(c)||null,createdAt:c.createdAt||null,uses:(useMap[n.key]||[]).sort((a,b)=>Number(b.usedAt||0)-Number(a.usedAt||0))});});
     coupons.sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0)); res.set("Cache-Control","no-store, max-age=0"); res.json({coupons});
   } catch(e) { res.status(e.status||500).json({error:e.status?e.message:"Could not load coupons."}); }
 });
