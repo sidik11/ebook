@@ -48,6 +48,13 @@ function loadEnv() {
 }
 loadEnv();
 
+// Password-reset OTPs and session tokens depend on this secret. Fail during
+// module initialization so a misconfigured deployment cannot run insecurely.
+const AUTH_SESSION_SECRET = String(process.env.AUTH_SESSION_SECRET || "");
+if (Buffer.byteLength(AUTH_SESSION_SECRET, "utf8") < 32) {
+  throw new Error("AUTH_SESSION_SECRET is required and must be at least 32 bytes. Generate a strong random secret and configure it in the API environment.");
+}
+
 // Firebase initialization with graceful degradation
 let firebaseInitialized = false;
 let dbInstance = null;
@@ -147,7 +154,7 @@ const MAX_DESCRIPTION = 5000;
 const PASSWORD_RESET_OTP_MS = 10 * 60 * 1000;
 const PASSWORD_RESET_OTP_ATTEMPTS = 5;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
-const RATE_LIMITS = { login: 10, register: 8, forgot: 5, "admin-setup": 3 };
+const RATE_LIMITS = { login: 10, register: 8, forgot: 5, "forgot-user": 3, "reset-verify": 10, "admin-setup": 3 };
 const ADMIN_SETUP_LOCK_MS = 5 * 60 * 1000;
 const ADMIN_SETUP_KEY = String(process.env.ADMIN_SETUP_KEY || "");
 
@@ -473,7 +480,7 @@ async function sendGmail({ to, subject, html, text }) {
 }
 
 function resetOtpHash(userId, otp) {
-  return hash(userId + ":" + otp + ":" + String(process.env.AUTH_SESSION_SECRET || "reset-otp"));
+  return hash(userId + ":" + otp + ":" + AUTH_SESSION_SECRET);
 }
 
 function getRazorpay() {
@@ -818,6 +825,11 @@ router.post("/auth/forgot-password", async (req, res) => {
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
     if (!validEmail(email)) return res.status(200).json(generic);
+    // Apply an account-keyed quota as well as the IP quota. Keep the response
+    // generic to avoid revealing whether an email address is registered.
+    if (!(await rateLimit("forgot-user:" + hash(email), RATE_LIMITS["forgot-user"]))) {
+      return res.status(200).json(generic);
+    }
     const found = await findUserByEmail(email);
     const userId = found?.userId;
     const user = found?.user;
@@ -856,32 +868,61 @@ router.post("/auth/forgot-password", async (req, res) => {
 
 router.post("/auth/reset-password", async (req, res) => {
   try {
+    // Distributed RTDB-backed limits protect both the endpoint and an
+    // individual reset token, including across serverless instances.
+    await enforceRateLimit(req, "reset-verify", RATE_LIMITS["reset-verify"]);
+
     const resetId = safeText(req.cookies.ms_reset, 100);
     const otp = safeText(req.body?.otp, 6);
     const password = req.body?.password;
-    if (!resetId || !/^\d{6}$/.test(otp) || !validPassword(password)) return res.status(400).json({ error: "Invalid reset details" });
+    if (!resetId || !/^\d{6}$/.test(otp) || !validPassword(password)) {
+      return res.status(400).json({ error: "Invalid reset details" });
+    }
+    if (!(await rateLimit("reset-token:" + resetId, PASSWORD_RESET_OTP_ATTEMPTS))) {
+      return res.status(429).json({ error: "Too many verification attempts. Request a new code." });
+    }
 
     const resetPath = "passwordResets/" + key(resetId);
-    const reset = await get(resetPath);
-    if (!reset || reset.consumed || Number(reset.expiresAt) <= now()) return res.status(400).json({ error: "Invalid or expired verification code" });
-    const attempts = Number(reset.attempts || 0);
-    if (attempts >= PASSWORD_RESET_OTP_ATTEMPTS) return res.status(429).json({ error: "Too many verification attempts. Request a new code." });
+    const resetRef = requireDb().ref(resetPath);
+    const claimToken = crypto.randomBytes(24).toString("base64url");
+    const timestamp = now();
 
-    if (resetOtpHash(reset.userId, otp) !== reset.otpHash) {
-      await update(resetPath, { attempts: attempts + 1, lastAttemptAt: now() });
+    // One RTDB transaction serializes all competing verification attempts.
+    // Incorrect codes increment attempts atomically; a correct code atomically
+    // consumes the token, so parallel requests cannot both reset the password.
+    const transaction = await resetRef.transaction(current => {
+      if (!current || current.consumed || Number(current.expiresAt) <= timestamp) return;
+      const attempts = Number(current.attempts || 0);
+      if (attempts >= PASSWORD_RESET_OTP_ATTEMPTS) return;
+      if (resetOtpHash(current.userId, otp) === current.otpHash) {
+        return { ...current, consumed: true, consumedAt: timestamp, consumeToken: claimToken };
+      }
+      return { ...current, attempts: attempts + 1, lastAttemptAt: timestamp };
+    });
+
+    const reset = transaction.snapshot.val();
+    if (!transaction.committed || !reset) {
+      return res.status(400).json({ error: "Invalid or expired verification code" });
+    }
+    if (reset.consumeToken !== claimToken) {
+      if (Number(reset.attempts || 0) >= PASSWORD_RESET_OTP_ATTEMPTS) {
+        return res.status(429).json({ error: "Too many verification attempts. Request a new code." });
+      }
       return res.status(400).json({ error: "Invalid verification code" });
     }
 
     const userPath = "users/" + reset.userId;
     const user = await get(userPath);
-    if (!user || user.status !== "ACTIVE") return res.status(400).json({ error: "Account is unavailable" });
+    if (!user || user.status !== "ACTIVE") {
+      // The OTP remains consumed once claimed; it can never be replayed.
+      return res.status(400).json({ error: "Account is unavailable" });
+    }
 
     const db = requireDb();
     await db.ref().update({
       [userPath + "/passwordHash"]: passwordHash(password),
       [userPath + "/updatedAt"]: now(),
-      [resetPath + "/consumed"]: true,
-      [resetPath + "/consumedAt"]: now()
+      [resetPath + "/consumeToken"]: null
     });
     res.clearCookie("ms_reset", { path: "/api/auth" });
 
@@ -895,6 +936,7 @@ router.post("/auth/reset-password", async (req, res) => {
 
     res.json({ ok: true, message: "Password reset successfully. Please log in with your new password." });
   } catch (e) {
+    if (e.status === 429) return res.status(429).json({ error: e.message || "Too many requests. Please try again later." });
     console.error("Reset password error", e);
     res.status(e.status || 500).json({ error: e.status ? e.message : "Password reset failed" });
   }
