@@ -31,6 +31,8 @@ import {
   Receipt,
   TrendingUp,
   MessageSquare,
+  TicketPercent,
+  Copy,
 } from "lucide-react";
 import { api, useAuth, compressCoverImage } from "./main";
 
@@ -42,6 +44,7 @@ const NAV = [
   { key: "complaints", label: "Complaints", icon: MessageSquare },
   { key: "users", label: "Users", icon: Users },
   { key: "staff", label: "Sub-admins & Review", icon: UserCheck },
+  { key: "coupons", label: "Coupons", icon: TicketPercent },
   { key: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -82,6 +85,11 @@ function AdminPanel() {
     [books]
   );
   const [orders, setOrders] = useState([]);
+  const [coupons, setCoupons] = useState([]);
+  const [couponCodeInput, setCouponCodeInput] = useState("");
+  const [couponDiscountInput, setCouponDiscountInput] = useState("10");
+  const [couponLimitInput, setCouponLimitInput] = useState("1");
+  const [couponBusy, setCouponBusy] = useState(false);
   const [complaints, setComplaints] = useState([]);
   const [complaintFilter, setComplaintFilter] = useState("ALL");
   const [complaintQuery, setComplaintQuery] = useState("");
@@ -142,6 +150,24 @@ function AdminPanel() {
   const goToUpload = () => setView("upload");
 
   const loadSubAdmins = async () => { const data = await api("/api/admin/subadmins"); setSubAdmins(Array.isArray(data.users) ? data.users : []); };
+  const loadCoupons = async () => { const data = await api("/api/admin/coupons"); setCoupons(Array.isArray(data.coupons) ? data.coupons : []); };
+  const generateCouponCode = () => Array.from({length:12}, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random()*36)]).join("");
+  const createCoupon = async event => {
+    event.preventDefault(); setCouponBusy(true);
+    const code = couponCodeInput.trim().toUpperCase();
+    try {
+      await api("/api/admin/coupons", {method:"POST", body:JSON.stringify({code,discountPercent:Number(couponDiscountInput),maxUses:Number(couponLimitInput)})});
+      setCouponCodeInput(""); await loadCoupons(); showNotice("success", "Coupon " + code + " created.");
+    } catch(err) { showNotice("error", err.message || "Could not create coupon."); }
+    finally { setCouponBusy(false); }
+  };
+  const deleteCoupon = async coupon => {
+    if (!window.confirm("Delete coupon " + coupon.code + "? Existing purchase records will be retained.")) return;
+    setCouponBusy(true);
+    try { await api("/api/admin/coupons/" + encodeURIComponent(coupon.code), {method:"DELETE"}); await loadCoupons(); showNotice("success", "Coupon deleted."); }
+    catch(err) { showNotice("error", err.message || "Could not delete coupon."); }
+    finally { setCouponBusy(false); }
+  };
 
   const createSubAdmin = async event => {
     event.preventDefault(); setStaffBusy(true);
@@ -255,7 +281,7 @@ function AdminPanel() {
     if (quiet) setRefreshing(true);
     else setLoading(true);
     try {
-      await Promise.all([loadBooks(), loadOrders(), loadComplaints(), loadUsers(), loadAnalytics(), loadSubAdmins()]);
+      await Promise.all([loadBooks(), loadOrders(), loadComplaints(), loadUsers(), loadAnalytics(), loadSubAdmins(), loadCoupons()]);
       setInitialized(true);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
@@ -1202,6 +1228,24 @@ function AdminPanel() {
                 <div style={{display:"flex",gap:8,marginTop:8}}><button className="admin-primary" disabled={staffBusy} onClick={()=>reviewBook(book,"APPROVE")}>Approve & publish</button><button className="admin-secondary" disabled={staffBusy} onClick={()=>reviewBook(book,"REJECT")}>Reject</button></div>
               </article>) : <p>No books are awaiting review.</p>}
               {notice.text && <p className={notice.type==="error"?"error":"success"}>{notice.text}</p>}
+            </div>
+          </section>
+        )}
+
+        {view === "coupons" && (
+          <section className="admin-page-grid coupon-admin-page">
+            <div className="admin-card">
+              <SectionHeading eyebrow="PROMOTIONS" title="Generate a coupon" subtitle="Coupons apply only to paid ebooks. Codes are 12 letters/numbers and discounts are verified on the server." />
+              <form className="admin-coupon-form" onSubmit={createCoupon}>
+                <label className="admin-field"><span>12-character coupon code</span><div className="admin-coupon-code-row"><input value={couponCodeInput} onChange={e=>setCouponCodeInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,12))} pattern="[A-Z0-9]{12}" minLength={12} maxLength={12} placeholder="e.g. READ2026SAVE" required /><button type="button" className="admin-secondary" onClick={()=>setCouponCodeInput(generateCouponCode())}><TicketPercent size={15}/> Generate code</button></div></label>
+                <label className="admin-field"><span>Discount percentage (5–100%)</span><input type="number" min="5" max="100" step="1" value={couponDiscountInput} onChange={e=>setCouponDiscountInput(e.target.value)} required /></label>
+                <label className="admin-field"><span>Maximum users (total uses)</span><input type="number" min="1" max="1000000" step="1" value={couponLimitInput} onChange={e=>setCouponLimitInput(e.target.value)} required /><small>Each account can redeem this coupon only once.</small></label>
+                <button className="admin-primary" disabled={couponBusy || couponCodeInput.length!==12 || Number(couponDiscountInput)<5 || Number(couponDiscountInput)>100 || Number(couponLimitInput)<1}>{couponBusy ? "Saving…" : "Create coupon"}</button>
+              </form>
+            </div>
+            <div className="admin-card">
+              <SectionHeading eyebrow="COUPON MANAGEMENT" title={"Coupons · " + coupons.length} subtitle="Review redemption history to see which customer used each code. Deleted coupons remain in the audit history." />
+              {coupons.length ? <div className="admin-data-table-wrap"><table className="admin-data-table coupon-table"><thead><tr><th>Code</th><th>Discount</th><th>Uses</th><th>Status</th><th>Redemption details</th><th>Action</th></tr></thead><tbody>{coupons.map(c=> <tr key={c.code}><td><strong>{c.code}</strong><button type="button" className="admin-text-action" onClick={()=>{navigator.clipboard?.writeText(c.code);showNotice("success","Coupon code copied.");}}><Copy size={12}/> Copy</button></td><td>{c.discountPercent}%</td><td>{c.usedCount}/{c.maxUses}</td><td><b className={"admin-table-pill "+(c.status==="ACTIVE"?"good":"neutral")}>{c.status}</b></td><td>{c.uses?.length ? <details className="coupon-redemptions"><summary>{c.uses.length} redemption(s)</summary>{c.uses.map((u,i)=><div className="coupon-redemption" key={u.userId || i}><strong>{u.userName || u.userEmail || u.userId || "Customer"}</strong><span>{u.userEmail || ""}</span><span>{u.bookTitle || u.bookId || "Ebook"} · ₹{Number(u.discount || 0).toFixed(2)} discount</span><small>{u.usedAt ? formatDate(u.usedAt) : "Date unavailable"}</small></div>)}</details> : <span>Not used yet</span>}</td><td><button type="button" className="admin-user-action block" disabled={couponBusy || c.status!=="ACTIVE"} onClick={()=>deleteCoupon(c)}>Delete</button></td></tr>)}</tbody></table></div> : <EmptyState icon={<TicketPercent size={28}/>} title="No coupons yet" text="Create your first coupon to offer a discount on paid ebooks."/>}
             </div>
           </section>
         )}
