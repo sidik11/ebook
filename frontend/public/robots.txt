@@ -1,0 +1,14 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /sadmin
+Disallow: /read/
+Disallow: /library
+Disallow: /login
+Disallow: /register
+Disallow: /change-password
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /setadmin
+
+Sitemap: https://ebook-one-jade.vercel.app/sitemap.xml
