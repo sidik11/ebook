@@ -655,3 +655,23 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .admin-staff-field input:focus{border-color:#9474ff;background:#11172a;box-shadow:0 0 0 4px rgba(132,99,255,.15)}
 .admin-staff-form .admin-primary{grid-column:1/-1;min-height:52px;border-radius:12px;font-size:14px;letter-spacing:.01em}
 @media(max-width:600px){.admin-staff-form{grid-template-columns:minmax(0,1fr);gap:14px}.admin-staff-form .admin-primary{grid-column:auto}.admin-staff-field input{min-height:52px}}
+
+
+/* Customer coupon controls */
+.book-purchase-pricing{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:24px 0}
+.book-purchase-pricing h2{margin:0!important;font-size:30px}
+.book-original-price{text-decoration:line-through;color:#7d879c;font-size:18px}
+.book-discount-badge{padding:5px 9px;border-radius:999px;background:#153c2b;border:1px solid #286c49;color:#9df0bd;font-size:12px;font-weight:850}
+.book-coupon-panel{max-width:560px;margin:0 0 18px;padding:16px;border:1px solid #303750;border-radius:15px;background:linear-gradient(145deg,#111827,#0c111b)}
+.book-coupon-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.book-coupon-heading strong{font-size:14px;color:#eef1ff}.book-coupon-heading span{font-size:12px;color:#8c96ac}
+.book-coupon-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px}
+.book-coupon-controls input{min-width:0;width:100%;padding:12px 13px;border:1px solid #343e56;border-radius:10px;background:#080d16;color:#fff;font:inherit;letter-spacing:.08em;text-transform:uppercase}
+.book-coupon-controls input:focus{outline:0;border-color:#8d70ff;box-shadow:0 0 0 3px #8d70ff25}
+.book-coupon-apply{padding:0 15px;border:1px solid #6551bd;border-radius:10px;background:#201a3e;color:#dcd4ff;font-size:12px;font-weight:850;white-space:nowrap}.book-coupon-apply:disabled{opacity:.45;cursor:not-allowed}
+.book-coupon-applied{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:#10271d;color:#a5edbf;font-size:13px;flex-wrap:wrap}
+.book-coupon-applied button{color:#ffb6bf;text-decoration:underline;font-size:12px}
+.book-coupon-error,.book-coupon-success{margin:10px 0 0;font-size:12px}.book-coupon-error{color:#ff9eae}.book-coupon-success{color:#9de9b8}
+.admin-coupon-form{display:grid;gap:16px;max-width:760px;margin-top:20px}.admin-coupon-form .admin-field{display:grid;gap:8px}.admin-coupon-form .admin-field>span{font-size:12px;color:#c4cde0;font-weight:800}.admin-coupon-form .admin-field input{min-width:0;width:100%;padding:12px;border:1px solid #303b52;border-radius:10px;background:#080d16;color:#f5f6ff;font:inherit}.admin-coupon-form .admin-field input:focus{outline:0;border-color:#8c70ff;box-shadow:0 0 0 3px #8c70ff22}.admin-coupon-form .admin-field small{color:#8490a8;font-size:11px}
+.admin-coupon-code-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px}.admin-coupon-code-row .admin-secondary{display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.coupon-table{min-width:850px}.coupon-table td{vertical-align:top}.coupon-table td:first-child strong{display:block;letter-spacing:.08em}.coupon-table .admin-text-action{display:inline-flex;align-items:center;gap:4px;margin-top:7px}.coupon-redemptions summary{cursor:pointer;color:#b8aaff;font-weight:800}.coupon-redemption{display:grid;gap:4px;min-width:160px;padding:9px 0;border-bottom:1px solid #293247}.coupon-redemption span,.coupon-redemption small{color:#9aa6bc;font-size:10px;overflow-wrap:anywhere}
+@media(max-width:600px){.book-coupon-controls{grid-template-columns:minmax(0,1fr)}.book-coupon-apply{min-height:44px}.admin-coupon-code-row{grid-template-columns:minmax(0,1fr)}.book-coupon-heading{align-items:flex-start;flex-direction:column}}
