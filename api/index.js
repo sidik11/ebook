@@ -1735,8 +1735,12 @@ function couponDiscount(coupon, priceRupees) {
 async function getActiveCoupon(code) {
   if (!/^[A-Z0-9]{12}$/.test(code)) return null;
   const coupon = await get("coupons/" + code);
-  if (!coupon || coupon.status !== "ACTIVE" || (coupon.expiresAt && Number(coupon.expiresAt) <= now())) return null;
-  return coupon;
+  // Legacy coupons created before status was persisted may have no status field.
+  // The admin panel historically displayed those records as ACTIVE, so keep that
+  // behavior consistent while still rejecting explicitly disabled/deleted coupons.
+  const status = String(coupon?.status || "ACTIVE").toUpperCase();
+  if (!coupon || status !== "ACTIVE" || (coupon.expiresAt && Number(coupon.expiresAt) <= now())) return null;
+  return { ...coupon, status };
 }
 router.post("/coupons/validate", async (req, res) => {
   try {
@@ -1784,7 +1788,9 @@ router.post("/coupons/redeem-free", async (req, res) => {
 
     const redemptionTime = now();
     const couponTx = await db.ref("coupons/" + code).transaction(current => {
-      if (!current || current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= redemptionTime)) return;
+      // Match getActiveCoupon/admin behavior for legacy records with no status.
+      const status = String(current?.status || "ACTIVE").toUpperCase();
+      if (!current || status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= redemptionTime)) return;
       const discount = couponDiscount(current, Number(book.price || 0));
       if (discount <= 0 || Math.max(0, basePricePaise - Math.round(discount * 100)) !== 0) return;
       const redemptions = { ...(current.redemptions || {}) };
@@ -1813,7 +1819,7 @@ router.post("/coupons/redeem-free", async (req, res) => {
       const current = couponTx.snapshot?.val() || {};
       const previous = current.redemptions?.[userKey];
       if (previous?.bookId !== bookId) {
-        if (current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= redemptionTime)) {
+        if (String(current.status || "ACTIVE").toUpperCase() !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= redemptionTime)) {
           return res.status(409).json({ error: "This coupon is inactive or expired. Check its status and expiry in the admin panel." });
         }
         const currentDiscount = couponDiscount(current, Number(book.price || 0));
