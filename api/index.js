@@ -1808,7 +1808,11 @@ router.post("/orders/create", async (req, res) => {
     if (book.type === "FREE" || !basePricePaise) return res.status(400).json({ error: "This ebook is free. No payment is required" });
     const purchaseId = hash(auth.userId + ":" + bookId);
     const existingPurchase = await owned(auth.userId, bookId);
-    if (existingPurchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
+    if (existingPurchase?.status === "PAID") {
+      // Make retries idempotent: if the entitlement already exists, the client
+      // should continue to the library instead of getting stuck on a 409.
+      return res.json({ free: true, alreadyOwned: true, bookId });
+    }
     const couponCode = normalizeCouponCode(req.body?.couponCode);
     let coupon = null, discountRupees = 0, pricePaise = basePricePaise;
     if (couponCode) {
