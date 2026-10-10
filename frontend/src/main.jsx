@@ -251,6 +251,8 @@ function SeoManager() {
   const location = useLocation();
   useEffect(() => {
     const path = location.pathname;
+    // Individual book pages set their own metadata once the public book record loads.
+    if (/^\\/books\\/[^/]+$/.test(path)) return;
     const pages = {
       "/": ["MS Tech EBook | Buy and Read Ebooks Online", "Discover, buy, and read ebooks online with MS Tech EBook. Explore digital books across categories and access your library anytime."],
       "/books": ["Browse Ebooks Online | MS Tech EBook", "Explore ebooks by title, author, and category on MS Tech EBook. Discover digital books, compare details, and find your next read."],
