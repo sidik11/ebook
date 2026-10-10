@@ -905,6 +905,10 @@ function Detail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [buying, setBuying] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [couponBusy, setCouponBusy] = useState(false);
+  const [couponMessage, setCouponMessage] = useState({ type: "", text: "" });
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -993,6 +997,22 @@ function Detail() {
     return () => { schema.remove(); breadcrumb.remove(); };
   }, [book, id]);
 
+  async function applyCoupon() {
+    if (!user) return navigate("/login");
+    const code = couponCode.trim().toUpperCase();
+    if (!/^[A-Z0-9]{12}$/.test(code)) { setCouponMessage({ type: "error", text: "Enter a 12-character letter-and-number coupon code." }); return; }
+    setCouponBusy(true); setCouponMessage({ type: "", text: "" });
+    try {
+      const result = await api("/api/coupons/validate", { method: "POST", body: JSON.stringify({ code, bookId: id }) });
+      setCouponCode(result.code);
+      setAppliedCoupon(result);
+      setCouponMessage({ type: "success", text: `${result.discountPercent}% discount applied successfully.` });
+    } catch (err) {
+      setAppliedCoupon(null);
+      setCouponMessage({ type: "error", text: err.message || "Coupon could not be applied." });
+    } finally { setCouponBusy(false); }
+  }
+
   async function handleBuy() {
     if (!user) return navigate("/login");
     setBuying(true);
@@ -1000,7 +1020,7 @@ function Detail() {
     try {
       const orderData = await api("/api/orders/create", {
         method: "POST",
-        body: JSON.stringify({ bookId: id })
+        body: JSON.stringify({ bookId: id, ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}) })
       });
 
       if (!window.Razorpay) {
@@ -1073,13 +1093,20 @@ function Detail() {
         <p style={{ color: "#8b949e", marginBottom: "8px" }}>By {book.author || "MS Tech EBook"}</p>
         {book.publishedDate && <p style={{ color: "#8b949e", fontSize: "14px", marginBottom: "16px" }}>Published {new Date(book.publishedDate + "T00:00:00").toLocaleDateString()}</p>}
         <p style={{ whiteSpace: "pre-line" }}>{book.description}</p>
-        <h2 style={{ margin: "24px 0" }}>{isFree ? "Free" : `₹${Number(book.price || 0)}`}</h2>
+        <div className="book-purchase-pricing">
+          {appliedCoupon ? <><span className="book-original-price">₹{Number(book.price || 0).toFixed(2).replace(/\\.00$/, "")}</span><h2>₹{Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "")}</h2><span className="book-discount-badge">{appliedCoupon.discountPercent}% OFF</span></> : <h2>{isFree ? "Free" : `₹${Number(book.price || 0)}`}</h2>}
+        </div>
         {canRead ? (
           <Link className="primary" to={`/read/${id}`}>Read Now</Link>
         ) : (
           <>
+            {!isFree && <section className="book-coupon-panel" aria-label="Apply coupon">
+              <div className="book-coupon-heading"><strong>Have a coupon?</strong><span>Save on this ebook</span></div>
+              {appliedCoupon ? <div className="book-coupon-applied"><span><b>{appliedCoupon.code}</b> applied · {appliedCoupon.discountPercent}% off</span><button type="button" onClick={() => { setAppliedCoupon(null); setCouponMessage({type:"",text:""}); }}>Remove</button></div> : <div className="book-coupon-controls"><input aria-label="12-character coupon code" autoComplete="off" maxLength={12} value={couponCode} onChange={e => { setCouponCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,12)); setCouponMessage({type:"",text:""}); }} placeholder="Enter 12-character code" /><button type="button" className="book-coupon-apply" disabled={couponBusy || couponCode.length !== 12} onClick={applyCoupon}>{couponBusy ? "Checking…" : "Apply coupon"}</button></div>}
+              {couponMessage.text && <p className={couponMessage.type === "error" ? "book-coupon-error" : "book-coupon-success"} role="status">{couponMessage.text}</p>}
+            </section>}
             <button className="primary" onClick={handleBuy} disabled={buying}>
-              {buying ? "Initiating..." : `Buy for ₹${Number(book.price || 0)}`}
+              {buying ? "Initiating..." : `Buy for ₹${appliedCoupon ? Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "") : Number(book.price || 0)}`}
             </button>
             <p className="purchase-help">
               Digital purchases are non-refundable after the book is successfully unlocked. If your payment is captured but the book stays locked, <Link to={`/support?category=BOOK_NOT_UNLOCKED&bookId=${encodeURIComponent(id)}`}>raise a payment complaint</Link>.
