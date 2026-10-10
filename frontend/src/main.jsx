@@ -904,7 +904,7 @@ function Detail() {
 
   useEffect(() => {
     if (!book) return;
-    const title = `${book.title} | Read ${book.category || "Ebook"} Online | MS Tech EBook`;
+    const title = `${String(book.title || "Ebook").slice(0, 42)} | MS Tech EBook`;
     const summary = String(book.description || `Discover ${book.title} by ${book.author || "MS Tech EBook"} on MS Tech EBook.`).replace(/\s+/g, " ").trim().slice(0, 155);
     setSeoMetadata({
       title,
@@ -920,6 +920,8 @@ function Detail() {
     schema.textContent = JSON.stringify({
       "@context": "https://schema.org",
       "@type": "Book",
+      url: window.location.origin + `/books/${encodeURIComponent(id)}`,
+      bookFormat: "https://schema.org/EBook",
       name: String(book.title || ""),
       author: { "@type": "Person", name: String(book.author || "MS Tech EBook") },
       description: summary,
@@ -932,7 +934,7 @@ function Detail() {
         availability: "https://schema.org/InStock",
         url: window.location.origin + `/books/${encodeURIComponent(id)}`
       }
-    });
+    }).replace(/</g, "\\u003c");
     document.head.appendChild(schema);
     return () => { schema.remove(); };
   }, [book, id]);
