@@ -1171,15 +1171,15 @@ function AdminPanel() {
           <section className="admin-page-grid">
             <div className="admin-card">
               <SectionHeading eyebrow="STAFF ACCESS" title="Generate sub-admin credentials" subtitle="Sub-admins cannot register themselves and can only upload books for review." />
-              <form onSubmit={createSubAdmin} style={{display:"grid",gap:12,maxWidth:560}}>
-                <label>Display name<input value={newSubAdminName} onChange={e=>setNewSubAdminName(e.target.value)} maxLength={120} required /></label>
-                <label>User ID<input value={newSubAdminId} onChange={e=>setNewSubAdminId(e.target.value)} pattern="[A-Za-z0-9_-]{3,64}" placeholder="book_uploader01" required /></label>
-                <label>Password<input type="password" autoComplete="new-password" value={newSubAdminPassword} onChange={e=>setNewSubAdminPassword(e.target.value)} minLength={10} placeholder="10+ chars, upper/lower/number" required /></label>
+              <form onSubmit={createSubAdmin} className="admin-staff-form">
+                <label className="admin-staff-field"><span>Display name</span><input value={newSubAdminName} onChange={e=>setNewSubAdminName(e.target.value)} maxLength={120} placeholder="e.g. Book Uploader" required /></label>
+                <label className="admin-staff-field"><span>User ID</span><input value={newSubAdminId} onChange={e=>setNewSubAdminId(e.target.value)} pattern="[A-Za-z0-9_-]{3,64}" placeholder="book_uploader01" required /></label>
+                <label className="admin-staff-field"><span>Password</span><input type="password" autoComplete="new-password" value={newSubAdminPassword} onChange={e=>setNewSubAdminPassword(e.target.value)} minLength={10} placeholder="10+ characters, upper/lowercase and number" required /></label>
                 <button className="admin-primary" disabled={staffBusy}>Generate sub-admin login</button>
               </form>
               <h3 style={{marginTop:24}}>Existing sub-admin accounts</h3>
               {subAdmins.length ? <div className="admin-table-wrap"><table><thead><tr><th>User ID (fixed)</th><th>Name</th><th>Status</th><th>Controls</th></tr></thead><tbody>{subAdmins.map(item=><tr key={item.id}><td>{item.id}</td><td>{item.name}</td><td>{item.status}</td><td style={{display:"flex",gap:6,flexWrap:"wrap"}}><button type="button" className="admin-secondary" disabled={staffBusy} onClick={()=>editSubAdmin(item)}>Edit / Reset password</button><button type="button" className={ "admin-user-action " + (item.status==="BLOCKED"?"restore":"block")} disabled={staffBusy} onClick={()=>setSubAdminStatus(item,item.status==="BLOCKED"?"ACTIVE":"BLOCKED")}>{item.status==="BLOCKED"?"Unblock":"Block"}</button><button type="button" className="admin-user-action block" disabled={staffBusy} onClick={()=>deleteSubAdmin(item)}>Delete</button></td></tr>)}</tbody></table></div> : <p>No sub-admin accounts created yet.</p>}
-              {notice.text && <p className={notice.type==="error"?"error":"success"}>{notice.text}</p>}}
+              {notice.text && <p className={notice.type==="error"?"error":"success"}>{notice.text}</p>}
             </div>
             <div className="admin-card">
               <SectionHeading eyebrow="PUBLISHING GATE" title="Books awaiting review" subtitle="Only the main administrator can publish sub-admin submissions." />
