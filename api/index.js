@@ -8,6 +8,7 @@ const Razorpay = require("razorpay");
 const { google } = require("googleapis");
 const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { claimFreeCouponRedemption } = require("./coupon-core");
 
 // Load local .env if present
 function loadEnv() {
@@ -1891,10 +1892,6 @@ router.post("/coupons/redeem-free", async (req, res) => {
     const userKey = hash(auth.userId);
     const purchaseId = hash(auth.userId + ":" + bookId);
     const existingPurchase = await owned(auth.userId, bookId);
-    if (existingPurchase?.status === "PAID" &&
-        existingPurchase.userId === auth.userId && existingPurchase.bookId === bookId) {
-      return res.set("Cache-Control", "no-store").json({ ok: true, free: true, alreadyOwned: true, bookId });
-    }
 
     const configuredCoupon = await getActiveCoupon(code);
     if (!configuredCoupon) return res.status(400).json({ error: "This coupon is inactive or expired." });
@@ -1902,6 +1899,12 @@ router.post("/coupons/redeem-free", async (req, res) => {
     const discountPaise = couponDiscountPaise(configuredCoupon, pricePaise);
     if (percent !== 100 || discountPaise !== pricePaise) {
       return res.status(400).json({ error: "This action requires a valid 100% coupon. This coupon's configured discount is " + percent + "%." });
+    }
+
+    // Do not consume a coupon for an ebook the user already owns. If this exact
+    // coupon purchase was partially persisted, continue below to repair its ledger/order.
+    if (existingPurchase?.status === "PAID" && existingPurchase.couponCode !== code) {
+      return res.set("Cache-Control", "no-store").json({ ok: true, free: true, alreadyOwned: true, bookId });
     }
 
     // If an earlier attempt recorded the redemption but failed before creating
@@ -1919,54 +1922,17 @@ router.post("/coupons/redeem-free", async (req, res) => {
     let currentCoupon = configuredCoupon;
     if (!redemptionAlreadyRecorded) {
       const redemptionTime = now();
-      const couponTx = await db.ref("coupons/" + code).transaction(current => {
-        if (!current) return;
-        const effective = {
-          ...configuredCoupon,
-          ...current,
-          discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? current.discount ?? configuredCoupon.discountPercent,
-          maxUses: current.maxUses ?? configuredCoupon.maxUses,
-          usedCount: current.usedCount ?? configuredCoupon.usedCount ?? 0,
-          status: current.status ?? configuredCoupon.status ?? "ACTIVE",
-          expiresAt: current.expiresAt ?? configuredCoupon.expiresAt ?? null
-        };
-        if (couponStatus(effective) !== "ACTIVE" || couponExpiryIsPast(effective, redemptionTime)) return;
-        if (couponPercent(effective) !== 100 || couponDiscountPaise(effective, pricePaise) !== pricePaise) return;
-
-        const redemptions = { ...(effective.redemptions || {}) };
-        const previous = redemptions[userKey];
-        if (previous) return previous.bookId === bookId ? effective : undefined;
-
-        const reservations = { ...(effective.reservations || {}) };
-        Object.keys(reservations).forEach(k => {
-          const entry = reservations[k] || {};
-          const owner = couponReservationOwner(entry);
-          const expiry = couponReservationExpiryMs(entry);
-          const ownerRedeemed = owner && (redemptions[owner] || redemptions[hash(owner)]);
-          // Remove malformed/expired holds, this user's holds (including legacy
-          // aliases), and holds belonging to users whose redemption already won.
-          if (!owner || !expiry || expiry <= redemptionTime ||
-              owner === auth.userId || owner === userKey || ownerRedeemed) {
-            delete reservations[k];
-          }
-        });
-
-        const maxUses = Number(effective.maxUses || 0);
-        const recordedUses = couponRecordedUses(effective);
-        const activeReservations = couponLiveReservations(
-          { ...effective, redemptions, reservations }, redemptionTime, auth.userId
-        );
-        if (!Number.isInteger(maxUses) || maxUses < 1 ||
-            recordedUses + activeReservations >= maxUses) return;
-
-        redemptions[userKey] = { userId: auth.userId, bookId, redeemedAt: redemptionTime };
-        return {
-          ...effective,
-          usedCount: recordedUses + 1,
-          redemptions,
-          reservations
-        };
-      });
+      const couponTx = await db.ref("coupons/" + code).transaction(current =>
+        claimFreeCouponRedemption(current, {
+          configuredCoupon,
+          userId: auth.userId,
+          userKey,
+          bookId,
+          pricePaise,
+          timestamp: redemptionTime,
+          hash
+        })
+      );
 
       if (couponTx.committed) {
         currentCoupon = couponTx.snapshot?.val() || configuredCoupon;
