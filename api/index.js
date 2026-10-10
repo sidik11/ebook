@@ -1841,7 +1841,10 @@ router.post("/orders/create", async (req, res) => {
         await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId)).remove();
         return res.status(409).json({ error: "This ebook has already been purchased." });
       }
-      const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => current || { userId: auth.userId, bookId, orderId, discount: discountRupees, originalAmount: Number(book.price || 0), paidAmount: 0, usedAt: now() });
+      const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => {
+        if (current) return;
+        return { userId: auth.userId, bookId, orderId, discount: discountRupees, originalAmount: Number(book.price || 0), paidAmount: 0, usedAt: now() };
+      });
       await db.ref("coupons/" + couponCode).transaction(current => {
         if (!current) return;
         const reservations = current.reservations || {};
@@ -1954,7 +1957,10 @@ async function finalizePayment(paymentId, orderId) {
   if (!duplicateCaptured && order.couponCode) {
     const code = normalizeCouponCode(order.couponCode);
     const usePath = "couponUses/" + code + "/" + hash(order.userId);
-    const useTx = await db.ref(usePath).transaction(current => current || { userId: order.userId, bookId: order.bookId, orderId, discount: Number(order.discount || 0), originalAmount: Number(order.originalAmount || order.amount), paidAmount: Number(order.amount || 0), usedAt: now() });
+    const useTx = await db.ref(usePath).transaction(current => {
+      if (current) return;
+      return { userId: order.userId, bookId: order.bookId, orderId, discount: Number(order.discount || 0), originalAmount: Number(order.originalAmount || order.amount), paidAmount: Number(order.amount || 0), usedAt: now() };
+    });
     if (useTx.committed) {
       await db.ref("coupons/" + code).transaction(current => {
         if (!current) return;
