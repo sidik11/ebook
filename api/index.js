@@ -2096,7 +2096,7 @@ app.use(async (req, res, next) => {
       res.status(200);
       res.type("text/plain; charset=utf-8");
       res.set("Cache-Control", "public, s-maxage=3600, stale-while-revalidate=86400");
-      return res.send("User-agent: *\\nAllow: /\\nDisallow: /api/\\n\\nSitemap: " + origin + "/sitemap.xml\\n");
+      return res.send("User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: " + origin + "/sitemap.xml\n");
     }
     const entries = [
       { path: "/", priority: "1.0", changefreq: "weekly" },
