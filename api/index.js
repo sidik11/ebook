@@ -1818,7 +1818,16 @@ router.post("/orders/create", async (req, res) => {
     if (couponCode) {
       coupon = await getActiveCoupon(couponCode);
       if (!coupon) return res.status(400).json({ error: "Invalid or expired coupon code." });
-      if (await get("couponUses/" + couponCode + "/" + hash(auth.userId))) return res.status(409).json({ error: "You have already used this coupon." });
+      const priorCouponUse = await get("couponUses/" + couponCode + "/" + hash(auth.userId));
+      if (priorCouponUse) {
+        // If an earlier free redemption completed (or its entitlement was
+        // committed before a retry), treat the same book as an idempotent success.
+        const priorPurchase = await owned(auth.userId, bookId);
+        if (priorPurchase?.status === "PAID" && priorCouponUse.bookId === bookId) {
+          return res.json({ free: true, alreadyOwned: true, bookId });
+        }
+        return res.status(409).json({ error: "You have already used this coupon." });
+      }
       discountRupees = couponDiscount(coupon, Number(book.price || 0));
       pricePaise = Math.max(0, basePricePaise - Math.round(discountRupees * 100));
       if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
@@ -1858,6 +1867,10 @@ router.post("/orders/create", async (req, res) => {
       });
       if (!purchaseTx.committed) {
         await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId)).remove();
+        const currentPurchase = purchaseTx.snapshot.val();
+        if (currentPurchase?.status === "PAID" && currentPurchase.userId === auth.userId && currentPurchase.bookId === bookId) {
+          return res.json({ free: true, alreadyOwned: true, bookId });
+        }
         return res.status(409).json({ error: "This ebook has already been purchased." });
       }
       const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => {
