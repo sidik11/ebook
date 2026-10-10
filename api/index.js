@@ -1836,7 +1836,7 @@ router.post("/coupons/redeem-free", async (req, res) => {
       const current = couponTx.snapshot?.val() || {};
       const previous = current.redemptions?.[userKey];
       if (previous?.bookId !== bookId) {
-        if (String(current.status || "ACTIVE").toUpperCase() !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= redemptionTime)) {
+        if (couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current, redemptionTime)) {
           return res.status(409).json({ error: "This coupon is inactive or expired. Check its status and expiry in the admin panel." });
         }
         const currentDiscount = couponDiscount(current, Number(book.price || 0));
