@@ -1325,7 +1325,7 @@ router.get("/admin/books", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
-    const books = await listBooks(false, 200);
+    const books = await listBooks(false, 10000);
     res.json({ books: books.map(b => ({ id: b.id, ...b.data })) });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load admin books" });
