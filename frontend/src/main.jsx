@@ -1009,6 +1009,20 @@ function Detail() {
     setCouponBusy(true); setCouponMessage({ type: "", text: "" });
     try {
       const result = await api("/api/coupons/validate", { method: "POST", body: JSON.stringify({ code, bookId: id }) });
+      if (Number(result.finalPrice) === 0) {
+        // Redeem a valid 100% coupon immediately; do not require a second
+        // click on the purchase button or create a zero-value Razorpay order.
+        await api("/api/coupons/redeem-free", {
+          method: "POST",
+          body: JSON.stringify({ code: result.code, bookId: id })
+        });
+        setCouponCode(result.code);
+        setAppliedCoupon(result);
+        setShowCouponEntry(false);
+        setCouponMessage({ type: "success", text: "100% coupon redeemed. Ebook added to My Library." });
+        navigate("/library");
+        return;
+      }
       setCouponCode(result.code);
       setAppliedCoupon(result);
       setShowCouponEntry(false);
