@@ -1807,26 +1807,68 @@ async function getActiveCoupon(code) {
 }
 router.post("/coupons/validate", async (req, res) => {
   try {
-    const auth = await guard(req, res); if (!auth || !requireCsrf(req, res, auth)) return;
-    const code = normalizeCouponCode(req.body?.code), bookId = key(req.body?.bookId);
+    const auth = await guard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const code = normalizeCouponCode(req.body?.code);
+    const bookId = key(req.body?.bookId);
+    if (!/^[A-Z0-9]{12}$/.test(code)) return res.status(400).json({ error: "Enter a valid 12-character coupon code." });
+
     const book = await get("books/" + bookId);
-    if (!book || book.status !== "ACTIVE" || book.type === "FREE" || !amountPaise(book.price)) return res.status(400).json({ error: "Coupons can only be used on paid books." });
+    if (!book || book.status !== "ACTIVE" || book.type === "FREE" || !amountPaise(book.price)) {
+      return res.status(400).json({ error: "Coupons can only be used on active paid ebooks." });
+    }
     const coupon = await getActiveCoupon(code);
-    if (!coupon) return res.status(400).json({ error: "Invalid or expired coupon code." });
-    if (await get("couponUses/" + code + "/" + hash(auth.userId))) return res.status(409).json({ error: "You have already used this coupon." });
-    const reservations = await requireDb().ref("coupons/" + code + "/reservations").once("value");
-    let active = 0;
-    reservations.forEach(child => {
-      const reservation = child.val() || {};
-      // Ignore this user's own retry reservation, including legacy reservations
-      // written under the old userId+bookId key.
-      if (reservation.userId !== auth.userId && Number(reservation.expiresAt || 0) > now()) active++;
+    if (!coupon) return res.status(400).json({ error: "This coupon is inactive or expired." });
+
+    const userKey = hash(auth.userId);
+    const [priorUse, currentCouponSnap] = await Promise.all([
+      get("couponUses/" + code + "/" + userKey),
+      requireDb().ref("coupons/" + code).once("value")
+    ]);
+    const canonical = currentCouponSnap.val() || coupon;
+    const priorRedemption = (canonical.redemptions || {})[userKey];
+    if ((priorUse && priorUse.bookId !== bookId) || (priorRedemption && priorRedemption.bookId !== bookId)) {
+      return res.status(409).json({ error: "This account has already used this coupon for another ebook." });
+    }
+    if (priorUse || priorRedemption) {
+      const discountPercent = couponPercent(canonical);
+      const pricePaise = amountPaise(book.price);
+      const discountPaise = couponDiscountPaise(canonical, pricePaise);
+      const finalPaise = Math.max(0, pricePaise - discountPaise);
+      res.set("Cache-Control", "no-store");
+      return res.json({ ok: true, code, discountPercent, originalPrice: pricePaise / 100, discount: discountPaise / 100, finalPrice: finalPaise / 100, alreadyRedeemedForBook: true });
+    }
+
+    const maxUses = Number(canonical.maxUses ?? coupon.maxUses ?? 0);
+    const recordedUses = couponRecordedUses(canonical);
+    const activeReservations = couponLiveReservations(canonical, now(), auth.userId);
+    if (!Number.isInteger(maxUses) || maxUses < 1) {
+      return res.status(409).json({ error: "This coupon has an invalid usage limit. Check it in the admin panel." });
+    }
+    if (recordedUses + activeReservations >= maxUses) {
+      return res.status(409).json({
+        error: activeReservations > 0 && recordedUses < maxUses
+          ? "This coupon is temporarily held by another checkout. Please retry after that checkout expires."
+          : "This coupon has reached its usage limit.",
+        diagnostics: { configuredMaxUses: maxUses, recordedUses, activeReservations }
+      });
+    }
+
+    const pricePaise = amountPaise(book.price);
+    const discountPaise = couponDiscountPaise(canonical, pricePaise);
+    const finalPaise = Math.max(0, pricePaise - discountPaise);
+    res.set("Cache-Control", "no-store");
+    res.json({
+      ok: true, code, discountPercent: couponPercent(canonical),
+      originalPrice: pricePaise / 100, discount: discountPaise / 100,
+      finalPrice: finalPaise / 100
     });
-    if (Number(coupon.usedCount || 0) + active >= Number(coupon.maxUses || 0)) return res.status(409).json({ error: "This coupon has reached its usage limit." });
-    const originalPrice = Number(book.price || 0), discount = couponDiscount(coupon, originalPrice);
-    res.set("Cache-Control", "no-store"); res.json({ ok: true, code, discountPercent: couponPercent(coupon), originalPrice, discount, finalPrice: Math.max(0, Math.round((originalPrice - discount) * 100) / 100) });
-  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not validate coupon." }); }
+  } catch (e) {
+    console.error("Coupon validation failed", e);
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not validate coupon." });
+  }
 });
+
 router.post("/coupons/redeem-free", async (req, res) => {
   try {
     const auth = await guard(req, res);
@@ -2029,7 +2071,16 @@ router.get("/admin/coupons", async (req, res) => {
     const users = {}, books = {}, useMap = {};
     usersSnap.forEach(n => users[n.key] = n.val() || {}); booksSnap.forEach(n => books[n.key] = n.val() || {});
     us.forEach(codeNode => { useMap[codeNode.key] = []; codeNode.forEach(n => { const u=n.val()||{}; useMap[codeNode.key].push({ id:n.key,userId:u.userId||"",email:users[u.userId]?.email||"",bookId:u.bookId||"",bookTitle:books[u.bookId]?.title||u.bookId||"",orderId:u.orderId||"",discount:Number(u.discount||0),paidAmount:Number(u.paidAmount||0),usedAt:u.usedAt||null }); }); });
-    const coupons=[]; cs.forEach(n=>{const c=n.val()||{};if(!c.code)return;coupons.push({code:n.key,discountPercent:couponPercent(c),maxUses:Number(c.maxUses||0),usedCount:Number(c.usedCount||0),status:couponStatus(c),expiresAt:couponExpiryMs(c)||null,createdAt:c.createdAt||null,uses:(useMap[n.key]||[]).sort((a,b)=>Number(b.usedAt||0)-Number(a.usedAt||0))});});
+    const coupons=[]; cs.forEach(n=>{
+      const c=n.val()||{}; if(!c.code)return;
+      const uses=(useMap[n.key]||[]).sort((a,b)=>Number(b.usedAt||0)-Number(a.usedAt||0));
+      coupons.push({
+        code:n.key, discountPercent:couponPercent(c), maxUses:Number(c.maxUses||0),
+        usedCount:couponRecordedUses(c, uses.length), redemptionRecordCount:couponRedemptionCount(c),
+        activeReservationCount:couponLiveReservations(c), status:couponStatus(c),
+        expiresAt:couponExpiryMs(c)||null, createdAt:c.createdAt||null, uses
+      });
+    });
     coupons.sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0)); res.set("Cache-Control","no-store, max-age=0"); res.json({coupons});
   } catch(e) { res.status(e.status||500).json({error:e.status?e.message:"Could not load coupons."}); }
 });
@@ -2096,34 +2147,41 @@ router.post("/orders/create", async (req, res) => {
       const reservationKey = hash(auth.userId);
       const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
         if (!current || couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current)) return;
-        const reservations = { ...(current.reservations || {}) };
+        const effective = {
+          ...coupon,
+          ...current,
+          discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? current.discount ?? coupon.discountPercent,
+          maxUses: current.maxUses ?? coupon.maxUses,
+          usedCount: current.usedCount ?? coupon.usedCount ?? 0,
+          status: current.status ?? coupon.status ?? "ACTIVE",
+          expiresAt: current.expiresAt ?? coupon.expiresAt ?? null
+        };
+        if (couponStatus(effective) !== "ACTIVE" || couponExpiryIsPast(effective)) return;
+        const reservations = { ...(effective.reservations || {}) };
         const currentTime = now();
-        // Remove expired/malformed entries and all legacy reservations belonging
-        // to this user before checking the shared usage cap.
         let ownReservation = null;
         Object.keys(reservations).forEach(k => {
           const entry = reservations[k] || {};
-          const expiresAt = Number(entry.expiresAt || 0);
-          if (!entry.userId || expiresAt <= currentTime) {
-            delete reservations[k];
-            return;
-          }
-          if (entry.userId === auth.userId) {
-            if (entry.bookId === bookId) ownReservation = entry;
+          const owner = couponReservationOwner(entry);
+          const expiry = couponReservationExpiryMs(entry);
+          const ownerRedeemed = owner && ((effective.redemptions || {})[owner] || (effective.redemptions || {})[hash(owner)]);
+          if (!owner || !expiry || expiry <= currentTime || owner === auth.userId || owner === reservationKey || ownerRedeemed) {
+            if (owner === auth.userId || owner === reservationKey) {
+              if (entry.bookId === bookId && expiry > currentTime) ownReservation = entry;
+            }
             delete reservations[k];
           }
         });
-        // Count only real, unexpired reservations belonging to other users.
-        const activeOtherReservations = Object.values(reservations).filter(entry =>
-          entry && entry.userId && Number(entry.expiresAt || 0) > currentTime
-        ).length;
-        if (!ownReservation && Number(current.usedCount || 0) + activeOtherReservations >= Number(current.maxUses || 0)) return;
+        const activeOtherReservations = couponLiveReservations({ ...effective, reservations }, currentTime, auth.userId);
+        const recordedUses = couponRecordedUses(effective);
+        const maxUses = Number(effective.maxUses || 0);
+        if (!ownReservation && (!Number.isInteger(maxUses) || maxUses < 1 || recordedUses + activeOtherReservations >= maxUses)) return;
         reservations[reservationKey] = {
           userId: auth.userId,
           bookId,
-          expiresAt: Math.max(Number(ownReservation?.expiresAt || 0), currentTime + 30 * 60 * 1000)
+          expiresAt: Math.max(couponReservationExpiryMs(ownReservation), currentTime + 30 * 60 * 1000)
         };
-        return { ...current, reservations };
+        return { ...effective, reservations };
       });
       if (!couponTx.committed) {
         // Distinguish a truly exhausted coupon from a concurrent request that
