@@ -1817,10 +1817,15 @@ router.post("/orders/create", async (req, res) => {
         if (!current || current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= now())) return;
         const reservations = current.reservations || {};
         Object.keys(reservations).forEach(k => { if (Number(reservations[k]?.expiresAt || 0) <= now()) delete reservations[k]; });
-        if (reservations[reservationKey] && Number(reservations[reservationKey].expiresAt) > now()) {
-          if (reservations[reservationKey].bookId !== bookId) return;
+        // Reuse this user's active reservation for the same book, or move it
+        // to the newly selected book instead of leaving a stale reservation behind.
+        const existingReservation = reservations[reservationKey];
+        if (existingReservation && Number(existingReservation.expiresAt || 0) > now() && existingReservation.bookId === bookId) {
           return current;
         }
+        // Remove this user's previous reservation before counting capacity. This
+        // makes retries and switching books idempotent without bypassing maxUses.
+        delete reservations[reservationKey];
         if (Number(current.usedCount || 0) + Object.keys(reservations).length >= Number(current.maxUses || 0)) return;
         reservations[reservationKey] = { userId: auth.userId, bookId, expiresAt: now() + 30 * 60 * 1000 };
         return { ...current, reservations };
