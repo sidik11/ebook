@@ -2101,6 +2101,7 @@ app.use(async (req, res, next) => {
     const entries = [
       { path: "/", priority: "1.0", changefreq: "weekly" },
       { path: "/books", priority: "0.9", changefreq: "daily" },
+      { path: "/support", priority: "0.5", changefreq: "monthly" },
       { path: "/refund-policy", priority: "0.3", changefreq: "yearly" }
     ];
     const publishedBooks = await listBooks(true, 10000);
