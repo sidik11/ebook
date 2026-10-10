@@ -912,6 +912,9 @@ function Detail() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    setCouponCode("");
+    setAppliedCoupon(null);
+    setCouponMessage({ type: "", text: "" });
     setLoading(true);
     api(`/api/books/${id}`)
       .then(res => setBook(res.book))
@@ -1099,7 +1102,7 @@ function Detail() {
         {book.publishedDate && <p style={{ color: "#8b949e", fontSize: "14px", marginBottom: "16px" }}>Published {new Date(book.publishedDate + "T00:00:00").toLocaleDateString()}</p>}
         <p style={{ whiteSpace: "pre-line" }}>{book.description}</p>
         <div className="book-purchase-pricing">
-          {appliedCoupon ? <><span className="book-original-price">₹{Number(book.price || 0).toFixed(2).replace(/\\.00$/, "")}</span><h2>₹{Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "")}</h2><span className="book-discount-badge">{appliedCoupon.discountPercent}% OFF</span></> : <h2>{isFree ? "Free" : `₹${Number(book.price || 0)}`}</h2>}
+          {appliedCoupon ? <><span className="book-original-price">₹{Number(book.price || 0).toFixed(2).replace(/\.00$/, "")}</span><h2>₹{Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "")}</h2><span className="book-discount-badge">{appliedCoupon.discountPercent}% OFF</span></> : <h2>{isFree ? "Free" : `₹${Number(book.price || 0)}`}</h2>}
         </div>
         {canRead ? (
           <Link className="primary" to={`/read/${id}`}>Read Now</Link>
