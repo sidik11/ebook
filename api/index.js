@@ -1748,7 +1748,13 @@ router.post("/coupons/validate", async (req, res) => {
     if (!coupon) return res.status(400).json({ error: "Invalid or expired coupon code." });
     if (await get("couponUses/" + code + "/" + hash(auth.userId))) return res.status(409).json({ error: "You have already used this coupon." });
     const reservations = await requireDb().ref("coupons/" + code + "/reservations").once("value");
-    let active = 0; reservations.forEach(child => { if (Number(child.val()?.expiresAt || 0) > now()) active++; });
+    let active = 0;
+    reservations.forEach(child => {
+      const reservation = child.val() || {};
+      // Ignore this user's own retry reservation, including legacy reservations
+      // written under the old userId+bookId key.
+      if (reservation.userId !== auth.userId && Number(reservation.expiresAt || 0) > now()) active++;
+    });
     if (Number(coupon.usedCount || 0) + active >= Number(coupon.maxUses || 0)) return res.status(409).json({ error: "This coupon has reached its usage limit." });
     const originalPrice = Number(book.price || 0), discount = couponDiscount(coupon, originalPrice);
     res.set("Cache-Control", "no-store"); res.json({ ok: true, code, discountPercent: coupon.discountPercent, originalPrice, discount, finalPrice: Math.max(0, Math.round((originalPrice - discount) * 100) / 100) });
@@ -1819,15 +1825,18 @@ router.post("/orders/create", async (req, res) => {
         Object.keys(reservations).forEach(k => { if (Number(reservations[k]?.expiresAt || 0) <= now()) delete reservations[k]; });
         // Reuse this user's active reservation for the same book, or move it
         // to the newly selected book instead of leaving a stale reservation behind.
-        const existingReservation = reservations[reservationKey];
-        if (existingReservation && Number(existingReservation.expiresAt || 0) > now() && existingReservation.bookId === bookId) {
-          return current;
-        }
-        // Remove this user's previous reservation before counting capacity. This
-        // makes retries and switching books idempotent without bypassing maxUses.
-        delete reservations[reservationKey];
+        // Clean up reservations for this user regardless of their key. Older
+        // deployments used a different key, which otherwise consumed the only slot.
+        let ownReservation = null;
+        Object.keys(reservations).forEach(k => {
+          if (reservations[k]?.userId === auth.userId) {
+            if (Number(reservations[k]?.expiresAt || 0) > now() && reservations[k]?.bookId === bookId) ownReservation = reservations[k];
+            delete reservations[k];
+          }
+        });
         if (Number(current.usedCount || 0) + Object.keys(reservations).length >= Number(current.maxUses || 0)) return;
         reservations[reservationKey] = { userId: auth.userId, bookId, expiresAt: now() + 30 * 60 * 1000 };
+        if (ownReservation) reservations[reservationKey].expiresAt = Math.max(Number(ownReservation.expiresAt || 0), now() + 30 * 60 * 1000);
         return { ...current, reservations };
       });
       if (!couponTx.committed) return res.status(409).json({ error: "This coupon has reached its usage limit." });
