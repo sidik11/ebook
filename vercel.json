@@ -13,6 +13,10 @@
       "destination": "/api/index.js"
     },
     {
+      "source": "/robots.txt",
+      "destination": "/api/index.js?seoPath=/robots.txt"
+    },
+    {
       "source": "/sitemap.xml",
       "destination": "/api/index.js?seoPath=/sitemap.xml"
     },
