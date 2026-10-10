@@ -1834,25 +1834,47 @@ router.post("/orders/create", async (req, res) => {
       const reservationKey = hash(auth.userId);
       const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
         if (!current || current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= now())) return;
-        const reservations = current.reservations || {};
-        Object.keys(reservations).forEach(k => { if (Number(reservations[k]?.expiresAt || 0) <= now()) delete reservations[k]; });
-        // Reuse this user's active reservation for the same book, or move it
-        // to the newly selected book instead of leaving a stale reservation behind.
-        // Clean up reservations for this user regardless of their key. Older
-        // deployments used a different key, which otherwise consumed the only slot.
+        const reservations = { ...(current.reservations || {}) };
+        const currentTime = now();
+        // Remove expired/malformed entries and all legacy reservations belonging
+        // to this user before checking the shared usage cap.
         let ownReservation = null;
         Object.keys(reservations).forEach(k => {
-          if (reservations[k]?.userId === auth.userId) {
-            if (Number(reservations[k]?.expiresAt || 0) > now() && reservations[k]?.bookId === bookId) ownReservation = reservations[k];
+          const entry = reservations[k] || {};
+          const expiresAt = Number(entry.expiresAt || 0);
+          if (!entry.userId || expiresAt <= currentTime) {
+            delete reservations[k];
+            return;
+          }
+          if (entry.userId === auth.userId) {
+            if (entry.bookId === bookId) ownReservation = entry;
             delete reservations[k];
           }
         });
-        if (Number(current.usedCount || 0) + Object.keys(reservations).length >= Number(current.maxUses || 0)) return;
-        reservations[reservationKey] = { userId: auth.userId, bookId, expiresAt: now() + 30 * 60 * 1000 };
-        if (ownReservation) reservations[reservationKey].expiresAt = Math.max(Number(ownReservation.expiresAt || 0), now() + 30 * 60 * 1000);
+        // Count only real, unexpired reservations belonging to other users.
+        const activeOtherReservations = Object.values(reservations).filter(entry =>
+          entry && entry.userId && Number(entry.expiresAt || 0) > currentTime
+        ).length;
+        if (!ownReservation && Number(current.usedCount || 0) + activeOtherReservations >= Number(current.maxUses || 0)) return;
+        reservations[reservationKey] = {
+          userId: auth.userId,
+          bookId,
+          expiresAt: Math.max(Number(ownReservation?.expiresAt || 0), currentTime + 30 * 60 * 1000)
+        };
         return { ...current, reservations };
       });
-      if (!couponTx.committed) return res.status(409).json({ error: "This coupon has reached its usage limit." });
+      if (!couponTx.committed) {
+        // Distinguish a truly exhausted coupon from a concurrent request that
+        // already created this user's reservation for the same book.
+        const latest = couponTx.snapshot?.val();
+        const own = latest?.reservations || {};
+        const sameUserReservation = Object.values(own).some(entry =>
+          entry?.userId === auth.userId &&
+          entry?.bookId === bookId &&
+          Number(entry?.expiresAt || 0) > now()
+        );
+        if (!sameUserReservation) return res.status(409).json({ error: "This coupon has reached its usage limit. Another checkout may be holding the last available use; wait 30 minutes or try again." });
+      }
     }
     const purchase = await owned(auth.userId, bookId);
 
