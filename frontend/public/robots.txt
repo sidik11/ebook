@@ -1,5 +1,0 @@
-User-agent: *
-Allow: /
-Disallow: /api/
-
-Sitemap: https://ebook-one-jade.vercel.app/sitemap.xml
