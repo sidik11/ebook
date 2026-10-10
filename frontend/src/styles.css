@@ -678,6 +678,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
 
 /* Compact coupon link beneath the main purchase action */
-.coupon-toggle-link{display:inline-flex;align-items:center;justify-content:flex-start;margin:9px 0 0;padding:3px 0;border:0;background:transparent;color:#b9a8ff;font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px;cursor:pointer;transition:color .18s ease}
+.detail .coupon-toggle-link{display:flex;width:fit-content;max-width:100%;clear:both;align-items:center;justify-content:flex-start;margin:12px 0 0;padding:3px 0;line-height:1.5;border:0;background:transparent;color:#b9a8ff;font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px;cursor:pointer;transition:color .18s ease}
 .coupon-toggle-link:hover{color:#e1d8ff}
 .coupon-toggle-link:focus-visible{outline:2px solid #9a7bff;outline-offset:4px;border-radius:3px}
