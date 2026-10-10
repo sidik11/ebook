@@ -15,57 +15,128 @@ export async function compressCoverImage(file) {
     throw new Error("Cover image must be 5 MB or smaller before compression.");
   }
 
-  let bitmap;
+  const MAX_DIMENSION = 1000;
+  const TIMEOUT_MS = 20000;
   let sourceUrl = "";
-  try {
-    if (typeof createImageBitmap === "function") {
-      bitmap = await createImageBitmap(file);
-    } else {
-      sourceUrl = URL.createObjectURL(file);
-      const image = new Image();
-      image.src = sourceUrl;
-      await new Promise((resolve, reject) => {
-        image.onload = resolve;
-        image.onerror = () => reject(new Error("Could not read this cover image."));
-      });
-      bitmap = image;
-    }
+  let bitmap;
 
-    const maxWidth = 700;
-    const maxHeight = 1000;
-    const scale = Math.min(1, maxWidth / bitmap.width, maxHeight / bitmap.height);
-    const width = Math.max(1, Math.round(bitmap.width * scale));
-    const height = Math.max(1, Math.round(bitmap.height * scale));
+  const withTimeout = (promise, ms) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Cover compression timed out. Try a smaller image or another browser.")), ms);
+    promise.then(
+      value => { clearTimeout(timer); resolve(value); },
+      error => { clearTimeout(timer); reject(error); }
+    );
+  });
+
+  const makeBlob = (canvas, quality) => new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Your browser could not encode this cover as WebP.")), "image/webp", quality);
+    } catch {
+      reject(new Error("Your browser could not encode this cover as WebP."));
+    }
+  });
+
+  const encodeOnMainThread = async (image) => {
+    const scale = Math.min(1, MAX_DIMENSION / image.width, MAX_DIMENSION / image.height);
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d", { alpha: false });
-    if (!context) throw new Error("Your browser cannot compress this image.");
+    if (!context) throw new Error("Your browser cannot prepare this cover image.");
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, width, height);
-    context.drawImage(bitmap, 0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
 
-    let blob = await new Promise(resolve => canvas.toBlob(resolve, "image/webp", 0.84));
-    if (!blob) throw new Error("Could not convert the cover to WebP.");
-    for (const quality of [0.76, 0.68, 0.58, 0.48]) {
-      if (blob.size <= COVER_OUTPUT_MAX_BYTES) break;
-      const next = await new Promise(resolve => canvas.toBlob(resolve, "image/webp", quality));
-      if (!next) break;
-      blob = next;
-    }
-    if (blob.size > COVER_OUTPUT_MAX_BYTES) {
-      throw new Error("This cover cannot be compressed below 350 KB. Choose a simpler or smaller image.");
+    // Encode at most three times; avoid repeatedly encoding large source dimensions.
+    let blob = await makeBlob(canvas, 0.78);
+    if (blob.size > COVER_OUTPUT_MAX_BYTES) blob = await makeBlob(canvas, 0.62);
+    if (blob.size > COVER_OUTPUT_MAX_BYTES) blob = await makeBlob(canvas, 0.46);
+    return { blob, width, height };
+  };
+
+  try {
+    const work = async () => {
+      // Prefer an isolated worker + OffscreenCanvas so decoding and WebP encoding
+      // do not freeze the upload form on mobile devices.
+      if (typeof Worker === "function" && typeof OffscreenCanvas === "function" && typeof createImageBitmap === "function") {
+        let worker;
+        let workerUrl;
+        try {
+          const workerSource = `
+            self.onmessage = async ({ data }) => {
+              let bitmap;
+              try {
+                bitmap = await createImageBitmap(data.file);
+                const scale = Math.min(1, 1000 / bitmap.width, 1000 / bitmap.height);
+                const width = Math.max(1, Math.round(bitmap.width * scale));
+                const height = Math.max(1, Math.round(bitmap.height * scale));
+                const canvas = new OffscreenCanvas(width, height);
+                const context = canvas.getContext("2d", { alpha: false });
+                if (!context) throw new Error("Canvas unavailable");
+                context.fillStyle = "#ffffff";
+                context.fillRect(0, 0, width, height);
+                context.drawImage(bitmap, 0, 0, width, height);
+                let blob = await canvas.convertToBlob({ type: "image/webp", quality: 0.78 });
+                if (blob.size > data.maxBytes) blob = await canvas.convertToBlob({ type: "image/webp", quality: 0.62 });
+                if (blob.size > data.maxBytes) blob = await canvas.convertToBlob({ type: "image/webp", quality: 0.46 });
+                self.postMessage({ ok: true, blob, width, height });
+              } catch (error) {
+                self.postMessage({ ok: false, error: error?.message || "Cover compression failed." });
+              } finally {
+                if (bitmap) bitmap.close?.();
+              }
+            };
+          `;
+          workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
+          worker = new Worker(workerUrl);
+          const result = await new Promise((resolve, reject) => {
+            worker.onmessage = event => event.data?.ok
+              ? resolve(event.data)
+              : reject(new Error(event.data?.error || "Cover compression failed."));
+            worker.onerror = () => reject(new Error("Background cover compression failed."));
+            worker.postMessage({ file, maxBytes: COVER_OUTPUT_MAX_BYTES });
+          });
+          return result;
+        } catch (workerError) {
+          // Fall back for browsers whose worker canvas/WebP encoder is unsupported.
+          if (workerError?.message?.includes("timed out")) throw workerError;
+        } finally {
+          if (worker) worker.terminate();
+          if (workerUrl) URL.revokeObjectURL(workerUrl);
+        }
+      }
+
+      if (typeof createImageBitmap === "function") {
+        bitmap = await createImageBitmap(file);
+      } else {
+        sourceUrl = URL.createObjectURL(file);
+        const image = new Image();
+        image.src = sourceUrl;
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = () => reject(new Error("Could not read this cover image."));
+        });
+        bitmap = image;
+      }
+      return await encodeOnMainThread(bitmap);
+    };
+
+    const result = await withTimeout(work(), TIMEOUT_MS);
+    if (!result.blob || result.blob.size > COVER_OUTPUT_MAX_BYTES) {
+      throw new Error("Cover could not be compressed below 350 KB. Choose a smaller image.");
     }
 
     const baseName = String(file.name || "cover").replace(/\.[^.]+$/, "") || "cover";
-    const optimized = new File([blob], baseName + ".webp", { type: "image/webp", lastModified: Date.now() });
+    const optimized = new File([result.blob], baseName + ".webp", { type: "image/webp", lastModified: Date.now() });
     return {
       file: optimized,
       originalSize: file.size,
       compressedSize: optimized.size,
-      wasCompressed: file.type !== "image/webp" || file.size !== optimized.size || width !== bitmap.width || height !== bitmap.height,
-      width,
-      height
+      wasCompressed: file.type !== "image/webp" || file.size !== optimized.size || result.width !== bitmap?.width || result.height !== bitmap?.height,
+      width: result.width,
+      height: result.height
     };
   } finally {
     if (bitmap && typeof bitmap.close === "function") bitmap.close();
