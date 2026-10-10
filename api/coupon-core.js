@@ -1,7 +1,9 @@
 "use strict";
 
-// Pure transaction callback for 100% coupon redemption. Firebase may rerun this
-// callback after concurrent writes, so it must be deterministic and side-effect free.
+// Firebase can call a transaction updater with null before its server value is
+// available locally. Returning undefined at that point aborts the transaction
+// immediately; use the already-read coupon as the provisional base instead.
+// If the server has a newer record, RTDB retries the updater with that record.
 function normalizeStatus(value) {
   return String(value || "ACTIVE").trim().toUpperCase();
 }
@@ -36,11 +38,7 @@ function reservationExpiryMs(entry) {
 
 function recordedUses(coupon) {
   const redemptions = coupon?.redemptions && typeof coupon.redemptions === "object" ? coupon.redemptions : {};
-  return Math.max(
-    0,
-    Number(coupon?.usedCount || coupon?.usesCount || coupon?.redeemedCount || 0),
-    Object.values(redemptions).filter(Boolean).length
-  );
+  return Math.max(0, Number(coupon?.usedCount || coupon?.usesCount || coupon?.redeemedCount || 0), Object.values(redemptions).filter(Boolean).length);
 }
 
 function liveReservations(coupon, timestamp, currentUserId, hash) {
@@ -63,23 +61,24 @@ function firstDefined(...values) {
 function claimFreeCouponRedemption(current, {
   configuredCoupon, userId, userKey, bookId, pricePaise, timestamp, hash
 }) {
-  if (!current || typeof current !== "object") return;
+  const source = current && typeof current === "object"
+    ? current
+    : configuredCoupon;
+  if (!source || typeof source !== "object") return;
+
   const effective = {
     ...configuredCoupon,
-    ...current,
-    discountPercent: firstDefined(current.discountPercent, current.discount_percentage, current.percentage, current.discount, configuredCoupon.discountPercent, configuredCoupon.discount_percentage, configuredCoupon.percentage, configuredCoupon.discount),
-    maxUses: firstDefined(current.maxUses, current.max_uses, current.usageLimit, current.usage_limit, current.maxRedemptions, current.totalUses, configuredCoupon.maxUses, configuredCoupon.max_uses, configuredCoupon.usageLimit, configuredCoupon.usage_limit, configuredCoupon.maxRedemptions, configuredCoupon.totalUses),
-    usedCount: firstDefined(current.usedCount, current.usesCount, current.redeemedCount, configuredCoupon.usedCount, configuredCoupon.usesCount, configuredCoupon.redeemedCount, 0),
-    status: firstDefined(current.status, configuredCoupon.status, "ACTIVE"),
-    expiresAt: firstDefined(current.expiresAt, current.expiry, current.expires_at, configuredCoupon.expiresAt, configuredCoupon.expiry, configuredCoupon.expires_at, null)
+    ...source,
+    discountPercent: firstDefined(source.discountPercent, source.discount_percentage, source.percentage, source.discount, configuredCoupon.discountPercent, configuredCoupon.discount_percentage, configuredCoupon.percentage, configuredCoupon.discount),
+    maxUses: firstDefined(source.maxUses, source.max_uses, source.usageLimit, source.usage_limit, source.maxRedemptions, source.totalUses, configuredCoupon.maxUses, configuredCoupon.max_uses, configuredCoupon.usageLimit, configuredCoupon.usage_limit, configuredCoupon.maxRedemptions, configuredCoupon.totalUses),
+    usedCount: firstDefined(source.usedCount, source.usesCount, source.redeemedCount, configuredCoupon.usedCount, configuredCoupon.usesCount, configuredCoupon.redeemedCount, 0),
+    status: firstDefined(source.status, configuredCoupon.status, "ACTIVE"),
+    expiresAt: firstDefined(source.expiresAt, source.expiry, source.expires_at, configuredCoupon.expiresAt, configuredCoupon.expiry, configuredCoupon.expires_at, null)
   };
 
   if (normalizeStatus(effective.status) !== "ACTIVE") return;
   const expiry = expiryMs(effective);
   if (expiry > 0 && expiry <= timestamp) return;
-
-  // A 100% discount necessarily makes the entire positive price zero.
-  // Avoid rechecking rounded discount arithmetic in the RTDB transaction.
   if (couponPercent(effective) !== 100 || !Number.isSafeInteger(pricePaise) || pricePaise <= 0) return;
 
   const redemptions = { ...(effective.redemptions || {}) };
