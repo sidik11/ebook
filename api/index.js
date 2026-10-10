@@ -1728,11 +1728,18 @@ router.delete("/admin/books/:id", async (req, res) => {
 
 function normalizeCouponCode(value) { return String(value || "").trim().toUpperCase(); }
 function couponDiscount(coupon, priceRupees) {
-  const percent = Number(coupon?.discountPercent || 0);
-  if (!Number.isInteger(percent) || percent < 5 || percent > 100) return 0;
   const price = Number(priceRupees);
   if (!Number.isFinite(price) || price <= 0) return 0;
-  return Math.min(Math.round(price * percent) / 100, price);
+  const pricePaise = Math.round(price * 100);
+  return couponDiscountPaise(coupon, pricePaise) / 100;
+}
+function couponDiscountPaise(coupon, pricePaise) {
+  const percent = Number(coupon?.discountPercent);
+  const price = Number(pricePaise);
+  if (!Number.isInteger(percent) || percent < 5 || percent > 100) return 0;
+  if (!Number.isSafeInteger(price) || price <= 0) return 0;
+  // Calculate only in integer paise to avoid decimal-rupee rounding mismatches.
+  return Math.min(Math.round(price * percent / 100), price);
 }
 // Accept legacy expiry timestamps in milliseconds, seconds, or ISO date strings.
 // Older records may have seconds-based timestamps; comparing those directly with
@@ -1808,8 +1815,8 @@ router.post("/coupons/redeem-free", async (req, res) => {
       // Match getActiveCoupon/admin behavior for legacy records with no status.
       const status = String(current?.status || "ACTIVE").toUpperCase();
       if (!current || status !== "ACTIVE" || couponExpiryIsPast(current, redemptionTime)) return;
-      const discount = couponDiscount(current, Number(book.price || 0));
-      if (discount <= 0 || Math.max(0, basePricePaise - Math.round(discount * 100)) !== 0) return;
+      const discountPaise = couponDiscountPaise(current, basePricePaise);
+      if (discountPaise <= 0 || basePricePaise - discountPaise !== 0) return;
       const redemptions = { ...(current.redemptions || {}) };
       const previous = redemptions[userKey];
       if (previous) return previous.bookId === bookId ? current : undefined;
@@ -1839,8 +1846,8 @@ router.post("/coupons/redeem-free", async (req, res) => {
         if (couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current, redemptionTime)) {
           return res.status(409).json({ error: "This coupon is inactive or expired. Check its status and expiry in the admin panel." });
         }
-        const currentDiscount = couponDiscount(current, Number(book.price || 0));
-        if (currentDiscount <= 0 || Math.max(0, basePricePaise - Math.round(currentDiscount * 100)) !== 0) {
+        const currentDiscountPaise = couponDiscountPaise(current, basePricePaise);
+        if (currentDiscountPaise <= 0 || basePricePaise - currentDiscountPaise !== 0) {
           return res.status(409).json({ error: "This coupon does not provide a 100% discount for this ebook." });
         }
         return res.status(409).json({ error: "This coupon has reached its usage limit. Check maximum uses and redeemed count in the admin panel." });
