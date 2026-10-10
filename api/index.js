@@ -1729,7 +1729,7 @@ router.delete("/admin/books/:id", async (req, res) => {
 function normalizeCouponCode(value) { return String(value || "").trim().toUpperCase(); }
 function couponDiscount(coupon, priceRupees) {
   const percent = Number(coupon?.discountPercent || 0);
-  if (!Number.isInteger(percent) || percent < 1 || percent > 90) return 0;
+  if (!Number.isInteger(percent) || percent < 5 || percent > 100) return 0;
   return Math.min(Math.round(priceRupees * percent) / 100, priceRupees);
 }
 async function getActiveCoupon(code) {
@@ -1770,7 +1770,7 @@ router.post("/admin/coupons", async (req, res) => {
     const auth = await adminGuard(req, res); if (!auth || !requireCsrf(req, res, auth)) return;
     const code=normalizeCouponCode(req.body?.code), discountPercent=Number(req.body?.discountPercent), maxUses=Number(req.body?.maxUses);
     if(!/^[A-Z0-9]{12}$/.test(code)) return res.status(400).json({error:"Coupon code must contain exactly 12 letters or numbers."});
-    if(!Number.isInteger(discountPercent)||discountPercent<1||discountPercent>90) return res.status(400).json({error:"Discount must be a whole percentage from 1 to 90."});
+    if(!Number.isInteger(discountPercent)||discountPercent<5||discountPercent>100) return res.status(400).json({error:"Discount must be a whole percentage from 5 to 100."});
     if(!Number.isInteger(maxUses)||maxUses<1||maxUses>1000000) return res.status(400).json({error:"Usage limit must be a whole number from 1 to 1,000,000."});
     const tx=await requireDb().ref("coupons/"+code).transaction(current=>current?undefined:{code,discountPercent,maxUses,usedCount:0,status:"ACTIVE",createdAt:now(),createdBy:auth.userId,reservations:{}});
     if(!tx.committed) return res.status(409).json({error:"That coupon code already exists."});
@@ -1807,7 +1807,7 @@ router.post("/orders/create", async (req, res) => {
       if (!coupon) return res.status(400).json({ error: "Invalid or expired coupon code." });
       if (await get("couponUses/" + couponCode + "/" + hash(auth.userId))) return res.status(409).json({ error: "You have already used this coupon." });
       discountRupees = couponDiscount(coupon, Number(book.price || 0));
-      pricePaise = Math.max(100, basePricePaise - Math.round(discountRupees * 100));
+      pricePaise = Math.max(0, basePricePaise - Math.round(discountRupees * 100));
       if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
       const reservationKey = hash(auth.userId + ":" + bookId);
       const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
@@ -1824,6 +1824,31 @@ router.post("/orders/create", async (req, res) => {
     const purchaseId = hash(auth.userId + ":" + bookId);
     const purchase = await owned(auth.userId, bookId);
     if (purchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
+
+    // A 100% coupon grants access without sending a zero-value order to Razorpay.
+    if (coupon && pricePaise === 0) {
+      const db = requireDb();
+      const purchaseId = hash(auth.userId + ":" + bookId);
+      const orderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
+      const purchaseTx = await db.ref("purchases/" + purchaseId).transaction(current => {
+        if (current?.status === "PAID") return;
+        return { userId: auth.userId, bookId, orderId, paymentId: "", amount: 0, amountPaise: 0, status: "PAID", purchasedAt: now(), couponCode, originalAmount: Number(book.price || 0), discount: discountRupees };
+      });
+      if (!purchaseTx.committed) {
+        await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId + ":" + bookId)).remove();
+        return res.status(409).json({ error: "This ebook has already been purchased." });
+      }
+      const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => current || { userId: auth.userId, bookId, orderId, discount: discountRupees, originalAmount: Number(book.price || 0), paidAmount: 0, usedAt: now() });
+      await db.ref("coupons/" + couponCode).transaction(current => {
+        if (!current) return;
+        const reservations = current.reservations || {};
+        delete reservations[hash(auth.userId + ":" + bookId)];
+        return { ...current, usedCount: Number(current.usedCount || 0) + (useTx.committed ? 1 : 0), reservations };
+      });
+      await set("orders/" + orderId, { userId: auth.userId, bookId, amountPaise: 0, amount: 0, originalAmount: Number(book.price || 0), discount: discountRupees, couponCode, status: "PAID", createdAt: now(), updatedAt: now(), razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON" });
+      await audit("COUPON_REDEEMED_FREE_PURCHASE", auth, { code: couponCode, bookId, orderId });
+      return res.json({ free: true, order_id: orderId, couponCode, discount: discountRupees });
+    }
 
     // Recover an unpaid order if the customer closed checkout or the lock expired.
     // Reusing the same provider order avoids creating a second payable order.
