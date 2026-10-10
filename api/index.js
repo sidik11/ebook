@@ -1800,6 +1800,9 @@ router.post("/orders/create", async (req, res) => {
     if (!book || book.status !== "ACTIVE") return res.status(404).json({ error: "Book not found" });
     const basePricePaise = amountPaise(book.price);
     if (book.type === "FREE" || !basePricePaise) return res.status(400).json({ error: "This ebook is free. No payment is required" });
+    const purchaseId = hash(auth.userId + ":" + bookId);
+    const existingPurchase = await owned(auth.userId, bookId);
+    if (existingPurchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
     const couponCode = normalizeCouponCode(req.body?.couponCode);
     let coupon = null, discountRupees = 0, pricePaise = basePricePaise;
     if (couponCode) {
@@ -1824,9 +1827,7 @@ router.post("/orders/create", async (req, res) => {
       });
       if (!couponTx.committed) return res.status(409).json({ error: "This coupon has reached its usage limit." });
     }
-    const purchaseId = hash(auth.userId + ":" + bookId);
     const purchase = await owned(auth.userId, bookId);
-    if (purchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
 
     // A 100% coupon grants access without sending a zero-value order to Razorpay.
     if (coupon && pricePaise === 0) {
@@ -1848,7 +1849,7 @@ router.post("/orders/create", async (req, res) => {
       await db.ref("coupons/" + couponCode).transaction(current => {
         if (!current) return;
         const reservations = current.reservations || {};
-        delete reservations[hash(auth.userId + ":" + bookId)];
+        delete reservations[hash(auth.userId)];
         return { ...current, usedCount: Number(current.usedCount || 0) + (useTx.committed ? 1 : 0), reservations };
       });
       await set("orders/" + orderId, { userId: auth.userId, bookId, amountPaise: 0, amount: 0, originalAmount: Number(book.price || 0), discount: discountRupees, couponCode, status: "PAID", createdAt: now(), updatedAt: now(), razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON" });
