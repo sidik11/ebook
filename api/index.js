@@ -987,6 +987,24 @@ router.get("/books", async (req, res) => {
   }
 });
 
+router.get("/featured-books", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store, max-age=0");
+    const ids = await get("settings/featuredBookIds");
+    const selectedIds = Array.isArray(ids) ? ids.filter(id => typeof id === "string").slice(0, 6) : [];
+    const featured = [];
+    for (const id of selectedIds) {
+      const data = await get("books/" + key(id));
+      if (data && String(data.status || "").toUpperCase() === "ACTIVE") {
+        featured.push(await publicBook(id, data));
+      }
+    }
+    res.json({ books: featured });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || "Could not load featured ebooks" });
+  }
+});
+
 router.get("/books/:id", async (req, res) => {
   try {
     res.set("Cache-Control", "no-store, max-age=0");
@@ -1314,6 +1332,46 @@ router.get("/admin/books", async (req, res) => {
   }
 });
 
+
+router.get("/admin/featured-books", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    res.set("Cache-Control", "no-store, max-age=0");
+    const ids = await get("settings/featuredBookIds");
+    res.json({ bookIds: Array.isArray(ids) ? ids.filter(id => typeof id === "string").slice(0, 6) : [] });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message || "Could not load featured titles settings" });
+  }
+});
+
+router.put("/admin/featured-books", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const rawIds = req.body?.bookIds;
+    if (!Array.isArray(rawIds) || rawIds.length > 6) {
+      return res.status(400).json({ error: "Select up to 6 featured books." });
+    }
+    const ids = [...new Set(rawIds.map(id => key(id)).filter(Boolean))];
+    if (ids.length !== rawIds.length) {
+      return res.status(400).json({ error: "Featured book selection contains duplicate or invalid IDs." });
+    }
+    const db = requireDb();
+    const checks = await Promise.all(ids.map(async id => {
+      const book = await get("books/" + id);
+      return Boolean(book && String(book.status || "").toUpperCase() === "ACTIVE");
+    }));
+    if (checks.some(ok => !ok)) {
+      return res.status(400).json({ error: "Only published, active books can be featured. Refresh the list and try again." });
+    }
+    await set("settings/featuredBookIds", ids);
+    await audit("FEATURED_BOOKS_UPDATED", auth, { bookIds: ids });
+    res.set("Cache-Control", "no-store").json({ ok: true, bookIds: ids });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not save featured titles." });
+  }
+});
 
 router.get("/admin/analytics", async (req, res) => {
   try {
