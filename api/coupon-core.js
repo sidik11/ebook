@@ -34,16 +34,13 @@ function reservationExpiryMs(entry) {
   return timestampMs(entry?.expiresAt ?? entry?.expires_at ?? entry?.expiry);
 }
 
-function discountPaise(coupon, pricePaise) {
-  const percent = couponPercent(coupon);
-  if (!Number.isSafeInteger(pricePaise) || pricePaise <= 0 || !percent) return 0;
-  if (percent === 100) return pricePaise;
-  return Math.min(Math.floor((pricePaise * percent + 50) / 100), pricePaise);
-}
-
 function recordedUses(coupon) {
   const redemptions = coupon?.redemptions && typeof coupon.redemptions === "object" ? coupon.redemptions : {};
-  return Math.max(0, Number(coupon?.usedCount || coupon?.usesCount || coupon?.redeemedCount || 0), Object.values(redemptions).filter(Boolean).length);
+  return Math.max(
+    0,
+    Number(coupon?.usedCount || coupon?.usesCount || coupon?.redeemedCount || 0),
+    Object.values(redemptions).filter(Boolean).length
+  );
 }
 
 function liveReservations(coupon, timestamp, currentUserId, hash) {
@@ -63,11 +60,6 @@ function firstDefined(...values) {
   return values.find(value => value !== undefined && value !== null && value !== "");
 }
 
-/**
- * Return the next coupon record, or undefined to abort the RTDB transaction.
- * A repeated redemption for the same user/book is idempotent; a different book
- * is rejected. The usage limit is claimed atomically with the redemption record.
- */
 function claimFreeCouponRedemption(current, {
   configuredCoupon, userId, userKey, bookId, pricePaise, timestamp, hash
 }) {
@@ -81,10 +73,14 @@ function claimFreeCouponRedemption(current, {
     status: firstDefined(current.status, configuredCoupon.status, "ACTIVE"),
     expiresAt: firstDefined(current.expiresAt, current.expiry, current.expires_at, configuredCoupon.expiresAt, configuredCoupon.expiry, configuredCoupon.expires_at, null)
   };
+
   if (normalizeStatus(effective.status) !== "ACTIVE") return;
   const expiry = expiryMs(effective);
   if (expiry > 0 && expiry <= timestamp) return;
-  if (couponPercent(effective) !== 100 || discountPaise(effective, pricePaise) !== pricePaise) return;
+
+  // A 100% discount necessarily makes the entire positive price zero.
+  // Avoid rechecking rounded discount arithmetic in the RTDB transaction.
+  if (couponPercent(effective) !== 100 || !Number.isSafeInteger(pricePaise) || pricePaise <= 0) return;
 
   const redemptions = { ...(effective.redemptions || {}) };
   const previous = redemptions[userKey] || redemptions[userId];
@@ -111,4 +107,4 @@ function claimFreeCouponRedemption(current, {
   return { ...effective, usedCount: used + 1, redemptions, reservations };
 }
 
-module.exports = { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
+module.exports = { claimFreeCouponRedemption, couponPercent, timestampMs, expiryMs };
