@@ -893,6 +893,16 @@ function Detail() {
 
 
   useEffect(() => {
+    if (loading || (book && !error)) return;
+    setSeoMetadata({
+      title: "Ebook Not Found | MS Tech EBook",
+      description: "This ebook is unavailable or could not be found in the MS Tech EBook catalog.",
+      path: `/books/${encodeURIComponent(id)}`,
+      noindex: true
+    });
+  }, [loading, book, error, id]);
+
+  useEffect(() => {
     if (!book) return;
     const title = `${book.title} | Read ${book.category || "Ebook"} Online | MS Tech EBook`;
     const summary = String(book.description || `Discover ${book.title} by ${book.author || "MS Tech EBook"} on MS Tech EBook.`).replace(/\s+/g, " ").trim().slice(0, 155);
@@ -901,7 +911,6 @@ function Detail() {
       description: summary || `Discover ${book.title} on MS Tech EBook.`,
       path: `/books/${encodeURIComponent(id)}`,
       noindex: false,
-      image: book.coverUrl || ""
     });
     const oldSchema = document.getElementById("ms-tech-ebook-book-schema");
     if (oldSchema) oldSchema.remove();
@@ -916,7 +925,6 @@ function Detail() {
       description: summary,
       inLanguage: String(book.language || "en"),
       ...(book.publishedDate ? { datePublished: book.publishedDate } : {}),
-      ...(book.coverUrl ? { image: book.coverUrl } : {}),
       offers: {
         "@type": "Offer",
         priceCurrency: "INR",
