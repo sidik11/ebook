@@ -1111,7 +1111,6 @@ function Detail() {
           <Link className="primary" to={`/read/${id}`}>Read Now</Link>
         ) : (
           <>
- </section>}
             <button className="primary" onClick={handleBuy} disabled={buying}>
               {buying ? "Initiating..." : `Buy for ₹${appliedCoupon ? Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "") : Number(book.price || 0)}`}
             </button>
