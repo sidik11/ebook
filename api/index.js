@@ -1818,12 +1818,27 @@ router.post("/coupons/redeem-free", async (req, res) => {
       return res.status(409).json({ error: "You have already used this coupon." });
     }
 
+    // Read the canonical coupon configuration before entering the transaction.
+    // Some legacy RTDB records have incomplete transaction snapshots/fields even
+    // though the admin/validation read resolves the configured percentage and cap.
+    const configuredCoupon = await getActiveCoupon(code);
+    if (!configuredCoupon) return res.status(409).json({ error: "This coupon is inactive or expired." });
     const redemptionTime = now();
     const couponTx = await db.ref("coupons/" + code).transaction(current => {
-      // Match getActiveCoupon/admin behavior for legacy records with no status.
-      const status = String(current?.status || "ACTIVE").toUpperCase();
-      if (!current || status !== "ACTIVE" || couponExpiryIsPast(current, redemptionTime)) return;
-      const discountPaise = couponDiscountPaise(current, basePricePaise);
+      if (!current) return;
+      // Preserve canonical configuration from the validated read when older
+      // transaction records omit fields. Existing current values remain primary.
+      const effective = {
+        ...configuredCoupon,
+        ...current,
+        discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? configuredCoupon.discountPercent,
+        maxUses: current.maxUses ?? configuredCoupon.maxUses,
+        usedCount: current.usedCount ?? configuredCoupon.usedCount ?? 0,
+        status: current.status ?? configuredCoupon.status ?? "ACTIVE",
+        expiresAt: current.expiresAt ?? configuredCoupon.expiresAt ?? null
+      };
+      if (couponStatus(effective) !== "ACTIVE" || couponExpiryIsPast(effective, redemptionTime)) return;
+      const discountPaise = couponDiscountPaise(effective, basePricePaise);
       if (discountPaise <= 0 || basePricePaise - discountPaise !== 0) return;
       const redemptions = { ...(current.redemptions || {}) };
       const previous = redemptions[userKey];
@@ -1841,11 +1856,11 @@ router.post("/coupons/redeem-free", async (req, res) => {
         const reservationUserKey = hash(entry.userId);
         return !redemptions[reservationUserKey];
       }).length;
-      const maxUses = Number(current.maxUses || 0);
-      const usedCount = Number(current.usedCount || 0);
+      const maxUses = Number(effective.maxUses || 0);
+      const usedCount = Number(effective.usedCount || 0);
       if (maxUses < 1 || usedCount + activeReservations >= maxUses) return;
       redemptions[userKey] = { userId: auth.userId, bookId, redeemedAt: redemptionTime };
-      return { ...current, usedCount: Number(current.usedCount || 0) + 1, redemptions, reservations };
+      return { ...effective, usedCount: usedCount + 1, redemptions, reservations };
     });
     if (!couponTx.committed) {
       const current = couponTx.snapshot?.val() || {};
@@ -1854,28 +1869,29 @@ router.post("/coupons/redeem-free", async (req, res) => {
         if (couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current, redemptionTime)) {
           return res.status(409).json({ error: "This coupon is inactive or expired. Check its status and expiry in the admin panel." });
         }
-        const currentDiscountPaise = couponDiscountPaise(current, basePricePaise);
+        const effective = {
+          ...configuredCoupon,
+          ...current,
+          discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? configuredCoupon.discountPercent,
+          maxUses: current.maxUses ?? configuredCoupon.maxUses,
+          usedCount: current.usedCount ?? configuredCoupon.usedCount ?? 0,
+          status: current.status ?? configuredCoupon.status ?? "ACTIVE",
+          expiresAt: current.expiresAt ?? configuredCoupon.expiresAt ?? null
+        };
+        const currentDiscountPaise = couponDiscountPaise(effective, basePricePaise);
         if (currentDiscountPaise <= 0 || basePricePaise - currentDiscountPaise !== 0) {
           console.error("Coupon redemption discount mismatch", {
-            code,
-            bookId,
-            bookPrice: book.price,
-            basePricePaise,
-            discountPercentRaw: current.discountPercent,
-            discountPercentageRaw: current.discount_percentage,
-            percentageRaw: current.percentage,
-            discountRaw: current.discount,
-            normalizedPercent: couponPercent(current),
-            maxUses: current.maxUses,
-            usedCount: current.usedCount
+            code, bookId, bookPrice: book.price, basePricePaise,
+            discountPercent: couponPercent(effective), maxUses: effective.maxUses,
+            usedCount: effective.usedCount
           });
           return res.status(409).json({
-            error: "Coupon data mismatch. The server could not calculate a 100% discount from the stored coupon record.",
+            error: "Coupon configuration is inconsistent between the stored record and redemption transaction. Refresh the coupon record in admin and retry.",
             diagnostics: {
               bookPrice: Number(book.price),
-              discountPercent: couponPercent(current),
-              configuredMaxUses: Number(current.maxUses || 0),
-              recordedUses: Number(current.usedCount || 0)
+              discountPercent: couponPercent(effective),
+              configuredMaxUses: Number(effective.maxUses || 0),
+              recordedUses: Number(effective.usedCount || 0)
             }
           });
         }
