@@ -450,17 +450,24 @@ function Books() {
       <h1>Browse Ebooks Online</h1>
       <p>Explore the MS Tech EBook catalog by book title, author, or category. Open an ebook listing to review its description, publication details, and price before purchase.</p>
       {error && <p className="error">{error}</p>}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(180px, 260px)", gap: "12px", margin: "16px 0" }}>
-        <input
-          type="search"
-          placeholder="Search by title, author, or category..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-        <select aria-label="Filter ebooks by category" value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}>
-          <option value="ALL">All categories</option>
-          {categories.map(category => <option key={category} value={category}>{category}</option>)}
-        </select>
+      <div className="store-search-tools">
+        <label className="store-search-box">
+          <span className="store-search-icon" aria-hidden="true">⌕</span>
+          <input
+            type="search"
+            placeholder="Search books, authors, or categories"
+            aria-label="Search books, authors, or categories"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </label>
+        <label className="store-category-box">
+          <span className="store-filter-icon" aria-hidden="true">☷</span>
+          <select aria-label="Filter ebooks by category" value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}>
+            <option value="ALL">All categories</option>
+            {categories.map(category => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </label>
       </div>
       {!loading && !error && <p style={{ color: "#8b949e", marginTop: 0 }}>{filtered.length} {filtered.length === 1 ? "book" : "books"} found</p>}
       {loading ? (
