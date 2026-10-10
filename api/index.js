@@ -1340,14 +1340,13 @@ router.get("/admin/featured-books", async (req, res) => {
     res.set("Cache-Control", "no-store, max-age=0");
     const stored = await get("settings/featuredBookIds");
     const candidates = Array.isArray(stored) ? stored.filter(id => typeof id === "string").slice(0, 6) : [];
-    // Remove deleted/unpublished books from the selection so stale IDs never
-    // consume one of the six slots or prevent the admin from saving changes.
+    // Ignore deleted/unpublished books so stale IDs never consume one of the six slots
+    // or prevent the admin from saving changes. Keep GET requests read-only.
     const checks = await Promise.all(candidates.map(async id => {
       const book = await get("books/" + key(id));
       return book && String(book.status || "").toUpperCase() === "ACTIVE" ? id : null;
     }));
     const bookIds = checks.filter(Boolean);
-    if (bookIds.length !== candidates.length) await set("settings/featuredBookIds", bookIds);
     res.json({ bookIds });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load featured titles settings" });
