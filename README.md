@@ -150,12 +150,12 @@ Enable the Gmail API in Google Cloud and authorize the Gmail account that will s
 
 Because administrator browsers upload directly to a private R2 bucket using presigned PUT URLs, the R2 bucket must allow the deployed site origin. Cloudflare requires a bucket CORS rule for browser requests to presigned URLs.
 
-Use this policy in **R2 → your bucket → Settings → CORS Policy** and replace the origin with your exact Vercel/custom-domain origin:
+Use this policy in **R2 → your bucket → Settings → CORS Policy** and replace the origin with your exact deployed custom-domain origin:
 
 ```json
 [
   {
-    "AllowedOrigins": ["https://ebook-one-jade.vercel.app"],
+    "AllowedOrigins": ["https://mstech-ebook.store"],
     "AllowedMethods": ["PUT", "GET", "HEAD"],
     "AllowedHeaders": ["Content-Type"],
     "ExposeHeaders": ["ETag"],
