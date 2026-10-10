@@ -213,7 +213,7 @@ export async function checkAuth(portal = activePortal()) {
 
 // SEO metadata manager. This updates browser metadata on client-side navigation;
 // server-rendered/prerendered HTML is still needed for the strongest SEO results.
-function setSeoMetadata({ title, description, path, noindex = false, image = "" }) {
+function setSeoMetadata({ title, description, path, noindex = false, image = "", type = "website" }) {
   const origin = window.location.origin;
   const canonicalUrl = origin + (path || window.location.pathname);
   document.title = title;
@@ -228,7 +228,7 @@ function setSeoMetadata({ title, description, path, noindex = false, image = "" 
   };
   upsertMeta('meta[name="description"]', { name: "description" }, description);
   upsertMeta('meta[name="robots"]', { name: "robots" }, noindex ? "noindex, nofollow" : "index, follow, max-image-preview:large");
-  upsertMeta('meta[property="og:type"]', { property: "og:type" }, "website");
+  upsertMeta('meta[property="og:type"]', { property: "og:type" }, type);
   upsertMeta('meta[property="og:title"]', { property: "og:title" }, title);
   upsertMeta('meta[property="og:description"]', { property: "og:description" }, description);
   upsertMeta('meta[property="og:url"]', { property: "og:url" }, canonicalUrl);
@@ -238,6 +238,9 @@ function setSeoMetadata({ title, description, path, noindex = false, image = "" 
   if (image) {
     upsertMeta('meta[property="og:image"]', { property: "og:image" }, image);
     upsertMeta('meta[name="twitter:image"]', { name: "twitter:image" }, image);
+  } else {
+    document.head.querySelector('meta[property="og:image"]')?.remove();
+    document.head.querySelector('meta[name="twitter:image"]')?.remove();
   }
   let canonical = document.head.querySelector('link[rel="canonical"]');
   if (!canonical) {
@@ -251,6 +254,8 @@ function SeoManager() {
   const location = useLocation();
   useEffect(() => {
     const path = location.pathname;
+    const oldSchema = document.getElementById("ms-tech-ebook-website-schema");
+    if (oldSchema) oldSchema.remove();
     // Individual book pages set their own metadata once the public book record loads.
     if (/^\/books\/[^/]+$/.test(path)) return;
     const pages = {
@@ -265,8 +270,6 @@ function SeoManager() {
       title, description, path,
       noindex: isPrivate || path.startsWith("/books/") || (!pages[path] && path !== "/")
     });
-    const oldSchema = document.getElementById("ms-tech-ebook-website-schema");
-    if (oldSchema) oldSchema.remove();
     if (path === "/") {
       const schema = document.createElement("script");
       schema.id = "ms-tech-ebook-website-schema";
@@ -911,6 +914,7 @@ function Detail() {
       description: summary || `Discover ${book.title} on MS Tech EBook.`,
       path: `/books/${encodeURIComponent(id)}`,
       noindex: false,
+      type: "book",
     });
     const oldSchema = document.getElementById("ms-tech-ebook-book-schema");
     if (oldSchema) oldSchema.remove();
