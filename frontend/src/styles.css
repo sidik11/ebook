@@ -681,3 +681,68 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .detail .coupon-toggle-link{display:flex;width:fit-content;max-width:100%;clear:both;align-items:center;justify-content:flex-start;margin:12px 0 0;padding:3px 0;line-height:1.5;border:0;background:transparent;color:#b9a8ff;font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px;cursor:pointer;transition:color .18s ease}
 .coupon-toggle-link:hover{color:#e1d8ff}
 .coupon-toggle-link:focus-visible{outline:2px solid #9a7bff;outline-offset:4px;border-radius:3px}
+
+
+/* Admin-controlled homepage Featured Titles */
+.admin-featured-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 18px 0;
+  flex-wrap: wrap;
+}
+.admin-featured-toolbar p { margin: 0; color: var(--text, #e9eaf3); }
+.admin-featured-book-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.admin-featured-book {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border, #30364a);
+  border-radius: 14px;
+  background: rgba(255,255,255,.025);
+  cursor: pointer;
+  color: var(--text, #e9eaf3);
+}
+.admin-featured-book.selected {
+  border-color: #9270ff;
+  background: rgba(126,87,255,.11);
+}
+.admin-featured-book input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: #8b63ff;
+}
+.admin-featured-book-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.admin-featured-book-copy strong {
+  overflow-wrap: anywhere;
+}
+.admin-featured-book-copy small {
+  color: var(--muted, #aab1c2);
+  line-height: 1.4;
+}
+.admin-muted-note {
+  margin: 16px 0 0;
+  color: var(--muted, #aab1c2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+@media (max-width: 720px) {
+  .admin-featured-book-list { grid-template-columns: minmax(0, 1fr); }
+  .admin-featured-toolbar { align-items: stretch; }
+  .admin-featured-toolbar .admin-primary { width: 100%; }
+}
