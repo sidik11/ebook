@@ -43,7 +43,7 @@ function discountPaise(coupon, pricePaise) {
 
 function recordedUses(coupon) {
   const redemptions = coupon?.redemptions && typeof coupon.redemptions === "object" ? coupon.redemptions : {};
-  return Math.max(0, Number(coupon?.usedCount || 0), Object.values(redemptions).filter(Boolean).length);
+  return Math.max(0, Number(coupon?.usedCount || coupon?.usesCount || coupon?.redeemedCount || 0), Object.values(redemptions).filter(Boolean).length);
 }
 
 function liveReservations(coupon, timestamp, currentUserId, hash) {
@@ -59,6 +59,10 @@ function liveReservations(coupon, timestamp, currentUserId, hash) {
   }).length;
 }
 
+function firstDefined(...values) {
+  return values.find(value => value !== undefined && value !== null && value !== "");
+}
+
 /**
  * Return the next coupon record, or undefined to abort the RTDB transaction.
  * A repeated redemption for the same user/book is idempotent; a different book
@@ -71,11 +75,11 @@ function claimFreeCouponRedemption(current, {
   const effective = {
     ...configuredCoupon,
     ...current,
-    discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? current.discount ?? configuredCoupon.discountPercent,
-    maxUses: current.maxUses ?? configuredCoupon.maxUses,
-    usedCount: current.usedCount ?? configuredCoupon.usedCount ?? 0,
-    status: current.status ?? configuredCoupon.status ?? "ACTIVE",
-    expiresAt: current.expiresAt ?? configuredCoupon.expiresAt ?? null
+    discountPercent: firstDefined(current.discountPercent, current.discount_percentage, current.percentage, current.discount, configuredCoupon.discountPercent, configuredCoupon.discount_percentage, configuredCoupon.percentage, configuredCoupon.discount),
+    maxUses: firstDefined(current.maxUses, current.max_uses, current.usageLimit, current.usage_limit, current.maxRedemptions, current.totalUses, configuredCoupon.maxUses, configuredCoupon.max_uses, configuredCoupon.usageLimit, configuredCoupon.usage_limit, configuredCoupon.maxRedemptions, configuredCoupon.totalUses),
+    usedCount: firstDefined(current.usedCount, current.usesCount, current.redeemedCount, configuredCoupon.usedCount, configuredCoupon.usesCount, configuredCoupon.redeemedCount, 0),
+    status: firstDefined(current.status, configuredCoupon.status, "ACTIVE"),
+    expiresAt: firstDefined(current.expiresAt, current.expiry, current.expires_at, configuredCoupon.expiresAt, configuredCoupon.expiry, configuredCoupon.expires_at, null)
   };
   if (normalizeStatus(effective.status) !== "ACTIVE") return;
   const expiry = expiryMs(effective);
@@ -87,14 +91,14 @@ function claimFreeCouponRedemption(current, {
   if (previous) return previous.bookId === bookId ? effective : undefined;
 
   const reservations = { ...(effective.reservations || {}) };
-  for (const key of Object.keys(reservations)) {
-    const entry = reservations[key] || {};
+  for (const reservationKey of Object.keys(reservations)) {
+    const entry = reservations[reservationKey] || {};
     const owner = reservationOwner(entry);
     const expiresAt = reservationExpiryMs(entry);
     const ownerRedeemed = owner && (redemptions[owner] || redemptions[hash(owner)]);
     if (!owner || !expiresAt || expiresAt <= timestamp ||
         owner === userId || owner === userKey || ownerRedeemed) {
-      delete reservations[key];
+      delete reservations[reservationKey];
     }
   }
 
