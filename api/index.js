@@ -1730,17 +1730,34 @@ function normalizeCouponCode(value) { return String(value || "").trim().toUpperC
 function couponDiscount(coupon, priceRupees) {
   const percent = Number(coupon?.discountPercent || 0);
   if (!Number.isInteger(percent) || percent < 5 || percent > 100) return 0;
-  return Math.min(Math.round(priceRupees * percent) / 100, priceRupees);
+  const price = Number(priceRupees);
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  return Math.min(Math.round(price * percent) / 100, price);
+}
+// Accept legacy expiry timestamps in milliseconds, seconds, or ISO date strings.
+// Older records may have seconds-based timestamps; comparing those directly with
+// now() (milliseconds) incorrectly marks every such coupon as expired.
+function couponExpiryMs(coupon) {
+  const raw = coupon?.expiresAt;
+  if (raw == null || raw === "") return 0;
+  let value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(value)) value = Date.parse(String(raw));
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (value < 1e12) value *= 1000;
+  return value;
+}
+function couponStatus(coupon) {
+  return String(coupon?.status || "ACTIVE").trim().toUpperCase();
+}
+function couponExpiryIsPast(coupon, timestamp = now()) {
+  const expiry = couponExpiryMs(coupon);
+  return expiry > 0 && expiry <= timestamp;
 }
 async function getActiveCoupon(code) {
   if (!/^[A-Z0-9]{12}$/.test(code)) return null;
   const coupon = await get("coupons/" + code);
-  // Legacy coupons created before status was persisted may have no status field.
-  // The admin panel historically displayed those records as ACTIVE, so keep that
-  // behavior consistent while still rejecting explicitly disabled/deleted coupons.
-  const status = String(coupon?.status || "ACTIVE").toUpperCase();
-  if (!coupon || status !== "ACTIVE" || (coupon.expiresAt && Number(coupon.expiresAt) <= now())) return null;
-  return { ...coupon, status };
+  if (!coupon || couponStatus(coupon) !== "ACTIVE" || couponExpiryIsPast(coupon)) return null;
+  return { ...coupon, status: couponStatus(coupon), expiresAt: couponExpiryMs(coupon) || null };
 }
 router.post("/coupons/validate", async (req, res) => {
   try {
@@ -1790,7 +1807,7 @@ router.post("/coupons/redeem-free", async (req, res) => {
     const couponTx = await db.ref("coupons/" + code).transaction(current => {
       // Match getActiveCoupon/admin behavior for legacy records with no status.
       const status = String(current?.status || "ACTIVE").toUpperCase();
-      if (!current || status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= redemptionTime)) return;
+      if (!current || status !== "ACTIVE" || couponExpiryIsPast(current, redemptionTime)) return;
       const discount = couponDiscount(current, Number(book.price || 0));
       if (discount <= 0 || Math.max(0, basePricePaise - Math.round(discount * 100)) !== 0) return;
       const redemptions = { ...(current.redemptions || {}) };
@@ -1872,7 +1889,7 @@ router.get("/admin/coupons", async (req, res) => {
     const users = {}, books = {}, useMap = {};
     usersSnap.forEach(n => users[n.key] = n.val() || {}); booksSnap.forEach(n => books[n.key] = n.val() || {});
     us.forEach(codeNode => { useMap[codeNode.key] = []; codeNode.forEach(n => { const u=n.val()||{}; useMap[codeNode.key].push({ id:n.key,userId:u.userId||"",email:users[u.userId]?.email||"",bookId:u.bookId||"",bookTitle:books[u.bookId]?.title||u.bookId||"",orderId:u.orderId||"",discount:Number(u.discount||0),paidAmount:Number(u.paidAmount||0),usedAt:u.usedAt||null }); }); });
-    const coupons=[]; cs.forEach(n=>{const c=n.val()||{};if(!c.code)return;coupons.push({code:n.key,discountPercent:Number(c.discountPercent||0),maxUses:Number(c.maxUses||0),usedCount:Number(c.usedCount||0),status:c.status||"ACTIVE",createdAt:c.createdAt||null,uses:(useMap[n.key]||[]).sort((a,b)=>Number(b.usedAt||0)-Number(a.usedAt||0))});});
+    const coupons=[]; cs.forEach(n=>{const c=n.val()||{};if(!c.code)return;coupons.push({code:n.key,discountPercent:Number(c.discountPercent||0),maxUses:Number(c.maxUses||0),usedCount:Number(c.usedCount||0),status:couponStatus(c),expiresAt:couponExpiryMs(c)||null,createdAt:c.createdAt||null,uses:(useMap[n.key]||[]).sort((a,b)=>Number(b.usedAt||0)-Number(a.usedAt||0))});});
     coupons.sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0)); res.set("Cache-Control","no-store, max-age=0"); res.json({coupons});
   } catch(e) { res.status(e.status||500).json({error:e.status?e.message:"Could not load coupons."}); }
 });
@@ -1938,7 +1955,7 @@ router.post("/orders/create", async (req, res) => {
       if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
       const reservationKey = hash(auth.userId);
       const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
-        if (!current || current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= now())) return;
+        if (!current || couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current)) return;
         const reservations = { ...(current.reservations || {}) };
         const currentTime = now();
         // Remove expired/malformed entries and all legacy reservations belonging
