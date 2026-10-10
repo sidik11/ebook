@@ -675,3 +675,9 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .admin-coupon-code-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px}.admin-coupon-code-row .admin-secondary{display:inline-flex;align-items:center;justify-content:center;gap:7px}
 .coupon-table{min-width:850px}.coupon-table td{vertical-align:top}.coupon-table td:first-child strong{display:block;letter-spacing:.08em}.coupon-table .admin-text-action{display:inline-flex;align-items:center;gap:4px;margin-top:7px}.coupon-redemptions summary{cursor:pointer;color:#b8aaff;font-weight:800}.coupon-redemption{display:grid;gap:4px;min-width:160px;padding:9px 0;border-bottom:1px solid #293247}.coupon-redemption span,.coupon-redemption small{color:#9aa6bc;font-size:10px;overflow-wrap:anywhere}
 @media(max-width:600px){.book-coupon-controls{grid-template-columns:minmax(0,1fr)}.book-coupon-apply{min-height:44px}.admin-coupon-code-row{grid-template-columns:minmax(0,1fr)}.book-coupon-heading{align-items:flex-start;flex-direction:column}}
+
+
+/* Compact coupon link beneath the main purchase action */
+.coupon-toggle-link{display:inline-flex;align-items:center;justify-content:flex-start;margin:9px 0 0;padding:3px 0;border:0;background:transparent;color:#b9a8ff;font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px;cursor:pointer;transition:color .18s ease}
+.coupon-toggle-link:hover{color:#e1d8ff}
+.coupon-toggle-link:focus-visible{outline:2px solid #9a7bff;outline-offset:4px;border-radius:3px}
