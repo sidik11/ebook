@@ -1893,6 +1893,32 @@ router.post("/coupons/redeem-free", async (req, res) => {
     const purchaseId = hash(auth.userId + ":" + bookId);
     const existingPurchase = await owned(auth.userId, bookId);
 
+    // Repair the ledger/order if a prior request committed the entitlement but
+    // failed before its final bookkeeping or the response was lost. Once the
+    // purchase exists, a deleted/expired coupon must not block library recovery.
+    if (code && existingPurchase?.status === "PAID" &&
+        existingPurchase.userId === auth.userId &&
+        existingPurchase.bookId === bookId &&
+        existingPurchase.couponCode === code) {
+      const orderId = existingPurchase.orderId || ("coupon_free_" + crypto.randomBytes(12).toString("hex"));
+      await db.ref("couponUses/" + code + "/" + userKey).transaction(current => current || {
+        userId: auth.userId, bookId, orderId,
+        discount: Number(existingPurchase.discount || 0),
+        originalAmount: Number(existingPurchase.originalAmount || book.price || 0),
+        paidAmount: 0, usedAt: existingPurchase.purchasedAt || now()
+      });
+      await set("orders/" + orderId, {
+        userId: auth.userId, bookId, amountPaise: 0, amount: 0,
+        originalAmount: Number(existingPurchase.originalAmount || book.price || 0),
+        discount: Number(existingPurchase.discount || 0), couponCode: code,
+        status: "PAID", createdAt: existingPurchase.purchasedAt || now(), updatedAt: now(),
+        razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON"
+      });
+      return res.set("Cache-Control", "no-store").json({
+        ok: true, free: true, alreadyOwned: true, bookId, couponCode: code
+      });
+    }
+
     const configuredCoupon = await getActiveCoupon(code);
     if (!configuredCoupon) return res.status(400).json({ error: "This coupon is inactive or expired." });
     const percent = couponPercent(configuredCoupon);
