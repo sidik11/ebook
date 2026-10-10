@@ -1021,6 +1021,7 @@ function Detail() {
 
   async function handleBuy() {
     if (!user) return navigate("/login");
+    if (buying) return;
     setBuying(true);
 
     try {
@@ -1112,7 +1113,7 @@ function Detail() {
         ) : (
           <>
             <button className="primary" onClick={handleBuy} disabled={buying}>
-              {buying ? "Initiating..." : `Buy for ₹${appliedCoupon ? Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "") : Number(book.price || 0)}`}
+              {buying ? (appliedCoupon && Number(appliedCoupon.finalPrice) === 0 ? "Adding to My Library..." : "Initiating...") : (appliedCoupon && Number(appliedCoupon.finalPrice) === 0 ? "Get free access · Add to Library" : `Buy for ₹${appliedCoupon ? Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "") : Number(book.price || 0)}`)}
             </button>
             {!isFree && !appliedCoupon && <button type="button" className="coupon-toggle-link" onClick={() => { setShowCouponEntry(value => !value); setCouponMessage({type:"",text:""}); }}>
               {showCouponEntry ? "Cancel coupon" : "Apply a coupon"}
