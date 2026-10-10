@@ -33,6 +33,7 @@ import {
   MessageSquare,
   TicketPercent,
   Copy,
+  Pin,
 } from "lucide-react";
 import { api, useAuth, compressCoverImage } from "./main";
 
@@ -45,6 +46,7 @@ const NAV = [
   { key: "users", label: "Users", icon: Users },
   { key: "staff", label: "Sub-admins & Review", icon: UserCheck },
   { key: "coupons", label: "Coupons", icon: TicketPercent },
+  { key: "featured", label: "Featured Books", icon: Pin },
   { key: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -86,6 +88,8 @@ function AdminPanel() {
   );
   const [orders, setOrders] = useState([]);
   const [coupons, setCoupons] = useState([]);
+  const [featuredBookIds, setFeaturedBookIds] = useState([]);
+  const [featuredBusy, setFeaturedBusy] = useState(false);
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [couponDiscountInput, setCouponDiscountInput] = useState("10");
   const [couponLimitInput, setCouponLimitInput] = useState("1");
@@ -151,6 +155,27 @@ function AdminPanel() {
 
   const loadSubAdmins = async () => { const data = await api("/api/admin/subadmins"); setSubAdmins(Array.isArray(data.users) ? data.users : []); };
   const loadCoupons = async () => { const data = await api("/api/admin/coupons"); setCoupons(Array.isArray(data.coupons) ? data.coupons : []); };
+  const loadFeaturedBooks = async () => {
+    const data = await api("/api/admin/featured-books");
+    setFeaturedBookIds(Array.isArray(data.bookIds) ? data.bookIds.slice(0, 6) : []);
+  };
+  const toggleFeaturedBook = id => {
+    setFeaturedBookIds(current => current.includes(id)
+      ? current.filter(value => value !== id)
+      : current.length < 6 ? [...current, id] : current);
+  };
+  const saveFeaturedBooks = async () => {
+    setFeaturedBusy(true);
+    try {
+      const data = await api("/api/admin/featured-books", { method: "PUT", body: JSON.stringify({ bookIds: featuredBookIds }) });
+      setFeaturedBookIds(Array.isArray(data.bookIds) ? data.bookIds : []);
+      showNotice("success", "Homepage Featured Titles updated.");
+    } catch (err) {
+      showNotice("error", err.message || "Could not save featured titles.");
+    } finally {
+      setFeaturedBusy(false);
+    }
+  };
   const generateCouponCode = () => Array.from({length:12}, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random()*36)]).join("");
   const createCoupon = async event => {
     event.preventDefault(); setCouponBusy(true);
@@ -281,7 +306,7 @@ function AdminPanel() {
     if (quiet) setRefreshing(true);
     else setLoading(true);
     try {
-      await Promise.all([loadBooks(), loadOrders(), loadComplaints(), loadUsers(), loadAnalytics(), loadSubAdmins(), loadCoupons()]);
+      await Promise.all([loadBooks(), loadOrders(), loadComplaints(), loadUsers(), loadAnalytics(), loadSubAdmins(), loadCoupons(), loadFeaturedBooks()]);
       setInitialized(true);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
@@ -1246,6 +1271,49 @@ function AdminPanel() {
             <div className="admin-card">
               <SectionHeading eyebrow="COUPON MANAGEMENT" title={"Coupons · " + coupons.length} subtitle="Review redemption history to see which customer used each code. Deleted coupons remain in the audit history." />
               {coupons.length ? <div className="admin-data-table-wrap"><table className="admin-data-table coupon-table"><thead><tr><th>Code</th><th>Discount</th><th>Uses</th><th>Status</th><th>Redemption details</th><th>Action</th></tr></thead><tbody>{coupons.map(c=> <tr key={c.code}><td><strong>{c.code}</strong><button type="button" className="admin-text-action" onClick={()=>{navigator.clipboard?.writeText(c.code);showNotice("success","Coupon code copied.");}}><Copy size={12}/> Copy</button></td><td>{c.discountPercent}%</td><td><span>{c.usedCount}/{c.maxUses}</span>{Number(c.activeReservationCount||0)>0 && <small style={{display:"block",marginTop:4,color:"#aab1c2"}}>{c.activeReservationCount} active checkout hold{Number(c.activeReservationCount)===1?"":"s"}</small>}</td><td><b className={"admin-table-pill "+(c.status==="ACTIVE"?"good":"neutral")}>{c.status}</b></td><td>{c.uses?.length ? <details className="coupon-redemptions"><summary>{c.uses.length} redemption(s)</summary>{c.uses.map((u,i)=><div className="coupon-redemption" key={u.userId || i}><strong>{u.userName || u.email || u.userId || "Customer"}</strong><span>{u.email || ""}</span><span>{u.bookTitle || u.bookId || "Ebook"} · ₹{Number(u.discount || 0).toFixed(2)} discount</span><small>{u.usedAt ? new Date(u.usedAt).toLocaleString() : "Date unavailable"}</small></div>)}</details> : <span>Not used yet</span>}</td><td><button type="button" className="admin-user-action block" disabled={couponBusy || c.status!=="ACTIVE"} onClick={()=>deleteCoupon(c)}>Delete</button></td></tr>)}</tbody></table></div> : <EmptyState icon={<TicketPercent size={28}/>} title="No coupons yet" text="Create your first coupon to offer a discount on paid ebooks."/>}
+            </div>
+          </section>
+        )}
+
+        {view === "featured" && (
+          <section className="admin-page-grid">
+            <div className="admin-card">
+              <SectionHeading
+                eyebrow="HOMEPAGE DISPLAY"
+                title="Pin Featured Titles"
+                subtitle="Choose up to 6 published books. Only the books you select here will appear in the homepage Featured Titles section."
+              />
+              <div className="admin-featured-toolbar">
+                <p><strong>{featuredBookIds.length} / 6 selected</strong></p>
+                <button type="button" className="admin-primary" onClick={saveFeaturedBooks} disabled={featuredBusy}>
+                  {featuredBusy ? "Saving…" : "Save Featured Titles"}
+                </button>
+              </div>
+              <div className="admin-featured-book-list">
+                {books.filter(book => String(book.status || "").toUpperCase() === "ACTIVE").map(book => {
+                  const checked = featuredBookIds.includes(book.id);
+                  const disabled = !checked && featuredBookIds.length >= 6;
+                  return (
+                    <label key={book.id} className={"admin-featured-book" + (checked ? " selected" : "")}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={disabled || featuredBusy}
+                        onChange={() => toggleFeaturedBook(book.id)}
+                      />
+                      <span className="admin-featured-book-copy">
+                        <strong>{book.title || "Untitled ebook"}</strong>
+                        <small>{book.author || "MS Tech EBook"} · {String(book.type || "").toUpperCase() === "FREE" || Number(book.price || 0) === 0 ? "FREE" : "₹" + Number(book.price || 0)}</small>
+                      </span>
+                      {checked && <Pin size={16} aria-label="Pinned" />}
+                    </label>
+                  );
+                })}
+                {!books.some(book => String(book.status || "").toUpperCase() === "ACTIVE") && (
+                  <EmptyState icon={<LibraryIcon size={28} />} title="No published books" text="Publish books in Library first, then select them here." />
+                )}
+              </div>
+              <p className="admin-muted-note">Unselected books remain available in the full Store catalog. If fewer than six books are selected, only those selected books will be shown in Featured Titles.</p>
             </div>
           </section>
         )}
