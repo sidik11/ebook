@@ -210,6 +210,78 @@ export async function checkAuth(portal = activePortal()) {
   return res;
 }
 
+
+// SEO metadata manager. This updates browser metadata on client-side navigation;
+// server-rendered/prerendered HTML is still needed for the strongest SEO results.
+function setSeoMetadata({ title, description, path, noindex = false, image = "" }) {
+  const origin = window.location.origin;
+  const canonicalUrl = origin + (path || window.location.pathname);
+  document.title = title;
+  const upsertMeta = (selector, attrs, value) => {
+    let node = document.head.querySelector(selector);
+    if (!node) {
+      node = document.createElement("meta");
+      Object.entries(attrs).forEach(([key, val]) => node.setAttribute(key, val));
+      document.head.appendChild(node);
+    }
+    node.setAttribute("content", value);
+  };
+  upsertMeta('meta[name="description"]', { name: "description" }, description);
+  upsertMeta('meta[name="robots"]', { name: "robots" }, noindex ? "noindex, nofollow" : "index, follow, max-image-preview:large");
+  upsertMeta('meta[property="og:type"]', { property: "og:type" }, "website");
+  upsertMeta('meta[property="og:title"]', { property: "og:title" }, title);
+  upsertMeta('meta[property="og:description"]', { property: "og:description" }, description);
+  upsertMeta('meta[property="og:url"]', { property: "og:url" }, canonicalUrl);
+  upsertMeta('meta[name="twitter:card"]', { name: "twitter:card" }, image ? "summary_large_image" : "summary");
+  upsertMeta('meta[name="twitter:title"]', { name: "twitter:title" }, title);
+  upsertMeta('meta[name="twitter:description"]', { name: "twitter:description" }, description);
+  if (image) {
+    upsertMeta('meta[property="og:image"]', { property: "og:image" }, image);
+    upsertMeta('meta[name="twitter:image"]', { name: "twitter:image" }, image);
+  }
+  let canonical = document.head.querySelector('link[rel="canonical"]');
+  if (!canonical) {
+    canonical = document.createElement("link");
+    canonical.rel = "canonical";
+    document.head.appendChild(canonical);
+  }
+  canonical.href = canonicalUrl;
+}
+function SeoManager() {
+  const location = useLocation();
+  useEffect(() => {
+    const path = location.pathname;
+    const pages = {
+      "/": ["MS Tech EBook | Buy and Read Ebooks Online", "Discover, buy, and read ebooks online with MS Tech EBook. Explore digital books across categories and access your library anytime."],
+      "/books": ["Browse Ebooks Online | MS Tech EBook", "Explore ebooks by title, author, and category on MS Tech EBook. Discover digital books, compare details, and find your next read."],
+      "/refund-policy": ["Refund Policy | MS Tech EBook", "Read the MS Tech EBook refund policy for digital purchases, payment issues, and support eligibility."],
+      "/support": ["Customer Support | MS Tech EBook", "Contact MS Tech EBook support for payment problems, duplicate charges, and ebook access issues."]
+    };
+    const isPrivate = /^\/(admin|sadmin|read|library|login|register|change-password|forgot-password|reset-password|setadmin)(\/|$)/.test(path);
+    const [title, description] = pages[path] || ["MS Tech EBook | Digital Bookstore", "Explore digital books and ebooks on MS Tech EBook."];
+    setSeoMetadata({
+      title, description, path,
+      noindex: isPrivate || path.startsWith("/books/") || (!pages[path] && path !== "/")
+    });
+    const oldSchema = document.getElementById("ms-tech-ebook-website-schema");
+    if (oldSchema) oldSchema.remove();
+    if (path === "/") {
+      const schema = document.createElement("script");
+      schema.id = "ms-tech-ebook-website-schema";
+      schema.type = "application/ld+json";
+      schema.textContent = JSON.stringify({
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        name: "MS Tech EBook",
+        url: window.location.origin + "/",
+        description: pages["/"][1]
+      });
+      document.head.appendChild(schema);
+    }
+  }, [location.pathname, location.search]);
+  return null;
+}
+
 // Auth Context for centralized user state
 const AuthContext = createContext(null);
 export const useAuth = () => useContext(AuthContext);
@@ -817,6 +889,44 @@ function Detail() {
     }
   }, [id, user]);
 
+
+  useEffect(() => {
+    if (!book) return;
+    const title = `${book.title} | Read ${book.category || "Ebook"} Online | MS Tech EBook`;
+    const summary = String(book.description || `Discover ${book.title} by ${book.author || "MS Tech EBook"} on MS Tech EBook.`).replace(/\s+/g, " ").trim().slice(0, 155);
+    setSeoMetadata({
+      title,
+      description: summary || `Discover ${book.title} on MS Tech EBook.`,
+      path: `/books/${encodeURIComponent(id)}`,
+      noindex: false,
+      image: book.coverUrl || ""
+    });
+    const oldSchema = document.getElementById("ms-tech-ebook-book-schema");
+    if (oldSchema) oldSchema.remove();
+    const schema = document.createElement("script");
+    schema.id = "ms-tech-ebook-book-schema";
+    schema.type = "application/ld+json";
+    schema.textContent = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "Book",
+      name: String(book.title || ""),
+      author: { "@type": "Person", name: String(book.author || "MS Tech EBook") },
+      description: summary,
+      inLanguage: String(book.language || "en"),
+      ...(book.publishedDate ? { datePublished: book.publishedDate } : {}),
+      ...(book.coverUrl ? { image: book.coverUrl } : {}),
+      offers: {
+        "@type": "Offer",
+        priceCurrency: "INR",
+        price: String(book.type === "FREE" ? 0 : Number(book.price || 0)),
+        availability: "https://schema.org/InStock",
+        url: window.location.origin + `/books/${encodeURIComponent(id)}`
+      }
+    });
+    document.head.appendChild(schema);
+    return () => { schema.remove(); };
+  }, [book, id]);
+
   async function handleBuy() {
     if (!user) return navigate("/login");
     setBuying(true);
@@ -1384,6 +1494,7 @@ function App() {
 
   return (
     <AuthContext.Provider value={{ user: portalUser, setUser }}>
+      <SeoManager />
       <Layout>
         <Routes>
           <Route path="/" element={<Home />} />
