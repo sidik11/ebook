@@ -1,9 +1,8 @@
 "use strict";
 
 // Firebase can call a transaction updater with null before its server value is
-// available locally. Returning undefined at that point aborts the transaction
-// immediately; use the already-read coupon as the provisional base instead.
-// If the server has a newer record, RTDB retries the updater with that record.
+// available locally. Use the previously read coupon as the provisional base;
+// if the server has a newer record, RTDB retries with that record.
 function normalizeStatus(value) {
   return String(value || "ACTIVE").trim().toUpperCase();
 }
@@ -61,10 +60,13 @@ function firstDefined(...values) {
 function claimFreeCouponRedemption(current, {
   configuredCoupon, userId, userKey, bookId, pricePaise, timestamp, hash
 }) {
-  const source = current && typeof current === "object"
-    ? current
-    : configuredCoupon;
+  const source = current && typeof current === "object" ? current : configuredCoupon;
   if (!source || typeof source !== "object") return;
+
+  const expiryValue = firstDefined(
+    source.expiresAt, source.expiry, source.expires_at,
+    configuredCoupon.expiresAt, configuredCoupon.expiry, configuredCoupon.expires_at
+  );
 
   const effective = {
     ...configuredCoupon,
@@ -73,7 +75,8 @@ function claimFreeCouponRedemption(current, {
     maxUses: firstDefined(source.maxUses, source.max_uses, source.usageLimit, source.usage_limit, source.maxRedemptions, source.totalUses, configuredCoupon.maxUses, configuredCoupon.max_uses, configuredCoupon.usageLimit, configuredCoupon.usage_limit, configuredCoupon.maxRedemptions, configuredCoupon.totalUses),
     usedCount: firstDefined(source.usedCount, source.usesCount, source.redeemedCount, configuredCoupon.usedCount, configuredCoupon.usesCount, configuredCoupon.redeemedCount, 0),
     status: firstDefined(source.status, configuredCoupon.status, "ACTIVE"),
-    expiresAt: firstDefined(source.expiresAt, source.expiry, source.expires_at, configuredCoupon.expiresAt, configuredCoupon.expiry, configuredCoupon.expires_at, null)
+    // Realtime Database rejects undefined values. Null means this coupon has no expiry.
+    expiresAt: expiryValue === undefined ? null : expiryValue
   };
 
   if (normalizeStatus(effective.status) !== "ACTIVE") return;
