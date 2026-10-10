@@ -1809,12 +1809,15 @@ router.post("/orders/create", async (req, res) => {
       discountRupees = couponDiscount(coupon, Number(book.price || 0));
       pricePaise = Math.max(0, basePricePaise - Math.round(discountRupees * 100));
       if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
-      const reservationKey = hash(auth.userId + ":" + bookId);
+      const reservationKey = hash(auth.userId);
       const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
         if (!current || current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= now())) return;
         const reservations = current.reservations || {};
         Object.keys(reservations).forEach(k => { if (Number(reservations[k]?.expiresAt || 0) <= now()) delete reservations[k]; });
-        if (reservations[reservationKey] && Number(reservations[reservationKey].expiresAt) > now()) return current;
+        if (reservations[reservationKey] && Number(reservations[reservationKey].expiresAt) > now()) {
+          if (reservations[reservationKey].bookId !== bookId) return;
+          return current;
+        }
         if (Number(current.usedCount || 0) + Object.keys(reservations).length >= Number(current.maxUses || 0)) return;
         reservations[reservationKey] = { userId: auth.userId, bookId, expiresAt: now() + 30 * 60 * 1000 };
         return { ...current, reservations };
@@ -1835,7 +1838,7 @@ router.post("/orders/create", async (req, res) => {
         return { userId: auth.userId, bookId, orderId, paymentId: "", amount: 0, amountPaise: 0, status: "PAID", purchasedAt: now(), couponCode, originalAmount: Number(book.price || 0), discount: discountRupees };
       });
       if (!purchaseTx.committed) {
-        await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId + ":" + bookId)).remove();
+        await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId)).remove();
         return res.status(409).json({ error: "This ebook has already been purchased." });
       }
       const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => current || { userId: auth.userId, bookId, orderId, discount: discountRupees, originalAmount: Number(book.price || 0), paidAmount: 0, usedAt: now() });
@@ -1961,7 +1964,7 @@ async function finalizePayment(paymentId, orderId) {
       });
     }
   } else if (order.couponCode) {
-    await db.ref("coupons/" + normalizeCouponCode(order.couponCode) + "/reservations/" + hash(order.userId + ":" + order.bookId)).remove();
+    await db.ref("coupons/" + normalizeCouponCode(order.couponCode) + "/reservations/" + hash(order.userId)).remove();
   }
   if (duplicateCaptured) {
     updates["orders/" + orderId + "/refundStatus"] = "REVIEW_REQUIRED";
