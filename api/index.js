@@ -1725,6 +1725,70 @@ router.delete("/admin/books/:id", async (req, res) => {
   }
 });
 
+
+function normalizeCouponCode(value) { return String(value || "").trim().toUpperCase(); }
+function couponDiscount(coupon, priceRupees) {
+  const percent = Number(coupon?.discountPercent || 0);
+  if (!Number.isInteger(percent) || percent < 1 || percent > 90) return 0;
+  return Math.min(Math.round(priceRupees * percent) / 100, priceRupees);
+}
+async function getActiveCoupon(code) {
+  if (!/^[A-Z0-9]{12}$/.test(code)) return null;
+  const coupon = await get("coupons/" + code);
+  if (!coupon || coupon.status !== "ACTIVE" || (coupon.expiresAt && Number(coupon.expiresAt) <= now())) return null;
+  return coupon;
+}
+router.post("/coupons/validate", async (req, res) => {
+  try {
+    const auth = await guard(req, res); if (!auth || !requireCsrf(req, res, auth)) return;
+    const code = normalizeCouponCode(req.body?.code), bookId = key(req.body?.bookId);
+    const book = await get("books/" + bookId);
+    if (!book || book.status !== "ACTIVE" || book.type === "FREE" || !amountPaise(book.price)) return res.status(400).json({ error: "Coupons can only be used on paid books." });
+    const coupon = await getActiveCoupon(code);
+    if (!coupon) return res.status(400).json({ error: "Invalid or expired coupon code." });
+    if (await get("couponUses/" + code + "/" + hash(auth.userId))) return res.status(409).json({ error: "You have already used this coupon." });
+    const reservations = await requireDb().ref("coupons/" + code + "/reservations").once("value");
+    let active = 0; reservations.forEach(child => { if (Number(child.val()?.expiresAt || 0) > now()) active++; });
+    if (Number(coupon.usedCount || 0) + active >= Number(coupon.maxUses || 0)) return res.status(409).json({ error: "This coupon has reached its usage limit." });
+    const originalPrice = Number(book.price || 0), discount = couponDiscount(coupon, originalPrice);
+    res.set("Cache-Control", "no-store"); res.json({ ok: true, code, discountPercent: coupon.discountPercent, originalPrice, discount, finalPrice: Math.max(0, Math.round((originalPrice - discount) * 100) / 100) });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Could not validate coupon." }); }
+});
+router.get("/admin/coupons", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res); if (!auth) return;
+    const [cs, us, usersSnap, booksSnap] = await Promise.all([requireDb().ref("coupons").once("value"), requireDb().ref("couponUses").once("value"), requireDb().ref("users").once("value"), requireDb().ref("books").once("value")]);
+    const users = {}, books = {}, useMap = {};
+    usersSnap.forEach(n => users[n.key] = n.val() || {}); booksSnap.forEach(n => books[n.key] = n.val() || {});
+    us.forEach(codeNode => { useMap[codeNode.key] = []; codeNode.forEach(n => { const u=n.val()||{}; useMap[codeNode.key].push({ id:n.key,userId:u.userId||"",email:users[u.userId]?.email||"",bookId:u.bookId||"",bookTitle:books[u.bookId]?.title||u.bookId||"",orderId:u.orderId||"",discount:Number(u.discount||0),paidAmount:Number(u.paidAmount||0),usedAt:u.usedAt||null }); }); });
+    const coupons=[]; cs.forEach(n=>{const c=n.val()||{};if(!c.code)return;coupons.push({code:n.key,discountPercent:Number(c.discountPercent||0),maxUses:Number(c.maxUses||0),usedCount:Number(c.usedCount||0),status:c.status||"ACTIVE",createdAt:c.createdAt||null,uses:(useMap[n.key]||[]).sort((a,b)=>Number(b.usedAt||0)-Number(a.usedAt||0))});});
+    coupons.sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0)); res.set("Cache-Control","no-store, max-age=0"); res.json({coupons});
+  } catch(e) { res.status(e.status||500).json({error:e.status?e.message:"Could not load coupons."}); }
+});
+router.post("/admin/coupons", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res); if (!auth || !requireCsrf(req, res, auth)) return;
+    const code=normalizeCouponCode(req.body?.code), discountPercent=Number(req.body?.discountPercent), maxUses=Number(req.body?.maxUses);
+    if(!/^[A-Z0-9]{12}$/.test(code)) return res.status(400).json({error:"Coupon code must contain exactly 12 letters or numbers."});
+    if(!Number.isInteger(discountPercent)||discountPercent<1||discountPercent>90) return res.status(400).json({error:"Discount must be a whole percentage from 1 to 90."});
+    if(!Number.isInteger(maxUses)||maxUses<1||maxUses>1000000) return res.status(400).json({error:"Usage limit must be a whole number from 1 to 1,000,000."});
+    const tx=await requireDb().ref("coupons/"+code).transaction(current=>current?undefined:{code,discountPercent,maxUses,usedCount:0,status:"ACTIVE",createdAt:now(),createdBy:auth.userId,reservations:{}});
+    if(!tx.committed) return res.status(409).json({error:"That coupon code already exists."});
+    await audit("COUPON_CREATED",auth,{code,discountPercent,maxUses});
+    res.status(201).json({ok:true,coupon:{code,discountPercent,maxUses,usedCount:0,status:"ACTIVE",createdAt:now(),uses:[]}});
+  } catch(e) { res.status(e.status||500).json({error:e.status?e.message:"Could not create coupon."}); }
+});
+router.delete("/admin/coupons/:code", async (req, res) => {
+  try {
+    const auth=await adminGuard(req,res); if(!auth||!requireCsrf(req,res,auth)) return;
+    const code=normalizeCouponCode(req.params.code), coupon=await get("coupons/"+code);
+    if(!/^[A-Z0-9]{12}$/.test(code)) return res.status(400).json({error:"Invalid coupon code."});
+    if(!coupon||!coupon.code) return res.status(404).json({error:"Coupon not found."});
+    await update("coupons/"+code,{status:"DELETED",deletedAt:now(),deletedBy:auth.userId,reservations:null});
+    await audit("COUPON_DELETED",auth,{code}); res.json({ok:true,code});
+  } catch(e) { res.status(e.status||500).json({error:e.status?e.message:"Could not delete coupon."}); }
+});
+
 router.post("/orders/create", async (req, res) => {
   let lockPath = "";
   let lockToken = "";
@@ -1734,8 +1798,29 @@ router.post("/orders/create", async (req, res) => {
     const bookId = key(req.body?.bookId);
     const book = await get("books/" + bookId);
     if (!book || book.status !== "ACTIVE") return res.status(404).json({ error: "Book not found" });
-    const pricePaise = amountPaise(book.price);
-    if (book.type === "FREE" || !pricePaise) return res.status(400).json({ error: "This ebook is free. No payment is required" });
+    const basePricePaise = amountPaise(book.price);
+    if (book.type === "FREE" || !basePricePaise) return res.status(400).json({ error: "This ebook is free. No payment is required" });
+    const couponCode = normalizeCouponCode(req.body?.couponCode);
+    let coupon = null, discountRupees = 0, pricePaise = basePricePaise;
+    if (couponCode) {
+      coupon = await getActiveCoupon(couponCode);
+      if (!coupon) return res.status(400).json({ error: "Invalid or expired coupon code." });
+      if (await get("couponUses/" + couponCode + "/" + hash(auth.userId))) return res.status(409).json({ error: "You have already used this coupon." });
+      discountRupees = couponDiscount(coupon, Number(book.price || 0));
+      pricePaise = Math.max(100, basePricePaise - Math.round(discountRupees * 100));
+      if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
+      const reservationKey = hash(auth.userId + ":" + bookId);
+      const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
+        if (!current || current.status !== "ACTIVE" || (current.expiresAt && Number(current.expiresAt) <= now())) return;
+        const reservations = current.reservations || {};
+        Object.keys(reservations).forEach(k => { if (Number(reservations[k]?.expiresAt || 0) <= now()) delete reservations[k]; });
+        if (reservations[reservationKey] && Number(reservations[reservationKey].expiresAt) > now()) return current;
+        if (Number(current.usedCount || 0) + Object.keys(reservations).length >= Number(current.maxUses || 0)) return;
+        reservations[reservationKey] = { userId: auth.userId, bookId, expiresAt: now() + 30 * 60 * 1000 };
+        return { ...current, reservations };
+      });
+      if (!couponTx.committed) return res.status(409).json({ error: "This coupon has reached its usage limit." });
+    }
     const purchaseId = hash(auth.userId + ":" + bookId);
     const purchase = await owned(auth.userId, bookId);
     if (purchase?.status === "PAID") return res.status(409).json({ error: "Already purchased" });
@@ -1775,11 +1860,12 @@ router.post("/orders/create", async (req, res) => {
       notes: { userId: auth.userId, bookId }
     });
     await set("orders/" + order.id, {
-      userId: auth.userId, bookId, amountPaise: order.amount, amount: Number(book.price),
+      userId: auth.userId, bookId, amountPaise: order.amount, amount: Number((order.amount / 100).toFixed(2)),
+      originalAmount: Number(book.price), discount: discountRupees, couponCode: coupon ? couponCode : "",
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
     await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
-    res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title });
+    res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title, couponCode: coupon ? couponCode : "", discount: discountRupees });
   } catch (e) {
     if (lockPath && lockToken) {
       try {
@@ -1837,6 +1923,21 @@ async function finalizePayment(paymentId, orderId) {
     ["checkoutLocks/" + purchaseId + "/status"]: "PAID",
     ["checkoutLocks/" + purchaseId + "/updatedAt"]: now()
   };
+  if (!duplicateCaptured && order.couponCode) {
+    const code = normalizeCouponCode(order.couponCode);
+    const usePath = "couponUses/" + code + "/" + hash(order.userId);
+    const useTx = await db.ref(usePath).transaction(current => current || { userId: order.userId, bookId: order.bookId, orderId, discount: Number(order.discount || 0), originalAmount: Number(order.originalAmount || order.amount), paidAmount: Number(order.amount || 0), usedAt: now() });
+    if (useTx.committed) {
+      await db.ref("coupons/" + code).transaction(current => {
+        if (!current) return;
+        const reservations = current.reservations || {};
+        delete reservations[hash(order.userId + ":" + order.bookId)];
+        return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
+      });
+    }
+  } else if (order.couponCode) {
+    await db.ref("coupons/" + normalizeCouponCode(order.couponCode) + "/reservations/" + hash(order.userId + ":" + order.bookId)).remove();
+  }
   if (duplicateCaptured) {
     updates["orders/" + orderId + "/refundStatus"] = "REVIEW_REQUIRED";
     updates["orders/" + orderId + "/duplicateOfPaymentId"] = currentPurchase.paymentId;
