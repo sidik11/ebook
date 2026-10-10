@@ -393,7 +393,7 @@ function Home() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api("/api/books")
+    api("/api/featured-books")
       .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
@@ -411,7 +411,7 @@ function Home() {
         <h2>Featured Titles</h2>
         {loading && <p style={{ color: "#8b949e" }}>Loading catalog...</p>}
         {error && <p className="error">{error}</p>}
-        {!loading && !error && <Grid books={books.slice(0, 6)} />}
+        {!loading && !error && (books.length ? <Grid books={books.slice(0, 6)} /> : <p style={{ color: "#8b949e" }}>Featured titles are being updated. Browse the full catalog to explore all ebooks.</p>)}
         <p style={{ marginTop: "18px" }}>Looking for your next read? <Link to="/books">Browse the full ebook catalog</Link> to explore available titles, authors, categories, and prices. For help with purchases or access, visit <Link to="/support">customer support</Link>.</p>
       </section>
       <section aria-labelledby="ebook-store-guide" style={{ maxWidth: "900px", margin: "32px auto 0", padding: "0 16px" }}>
