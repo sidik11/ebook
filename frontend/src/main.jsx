@@ -449,7 +449,7 @@ function Books() {
     <main className="container">
       <h1>Browse Ebooks Online</h1>
       <p>Explore the MS Tech EBook catalog by book title, author, or category. Open an ebook listing to review its description, publication details, and price before purchase.</p>
-      {error && <p className="error">{error}</p>
+      {error && <p className="error">{error}</p>}
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(180px, 260px)", gap: "12px", margin: "16px 0" }}>
         <input
           type="search"
