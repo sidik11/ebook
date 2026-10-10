@@ -1734,11 +1734,12 @@ function couponDiscount(coupon, priceRupees) {
   return couponDiscountPaise(coupon, pricePaise) / 100;
 }
 function couponPercent(coupon) {
-  // discountPercent is canonical. Read older aliases only for coupons created
-  // by pre-migration versions; all newly-created coupons store discountPercent.
+  // Canonical field plus historical aliases. Some legacy records stored a
+  // formatted value such as "100%" instead of the numeric 100.
   const raw = coupon?.discountPercent ?? coupon?.discount_percentage ?? coupon?.percentage ?? coupon?.discount;
-  const percent = Number(raw);
-  return Number.isInteger(percent) && percent >= 5 && percent <= 100 ? percent : 0;
+  const normalized = typeof raw === "string" ? raw.trim().replace(/%$/, "").trim() : raw;
+  const percent = Number(normalized);
+  return Number.isFinite(percent) && Number.isInteger(percent) && percent >= 5 && percent <= 100 ? percent : 0;
 }
 function couponDiscountPaise(coupon, pricePaise) {
   const percent = couponPercent(coupon);
@@ -1855,7 +1856,28 @@ router.post("/coupons/redeem-free", async (req, res) => {
         }
         const currentDiscountPaise = couponDiscountPaise(current, basePricePaise);
         if (currentDiscountPaise <= 0 || basePricePaise - currentDiscountPaise !== 0) {
-          return res.status(409).json({ error: "This coupon does not provide a 100% discount for this ebook." });
+          console.error("Coupon redemption discount mismatch", {
+            code,
+            bookId,
+            bookPrice: book.price,
+            basePricePaise,
+            discountPercentRaw: current.discountPercent,
+            discountPercentageRaw: current.discount_percentage,
+            percentageRaw: current.percentage,
+            discountRaw: current.discount,
+            normalizedPercent: couponPercent(current),
+            maxUses: current.maxUses,
+            usedCount: current.usedCount
+          });
+          return res.status(409).json({
+            error: "Coupon data mismatch. The server could not calculate a 100% discount from the stored coupon record.",
+            diagnostics: {
+              bookPrice: Number(book.price),
+              discountPercent: couponPercent(current),
+              configuredMaxUses: Number(current.maxUses || 0),
+              recordedUses: Number(current.usedCount || 0)
+            }
+          });
         }
         return res.status(409).json({ error: "This coupon has reached its usage limit. Check maximum uses and redeemed count in the admin panel." });
       }
