@@ -276,10 +276,27 @@ function SeoManager() {
       schema.type = "application/ld+json";
       schema.textContent = JSON.stringify({
         "@context": "https://schema.org",
-        "@type": "WebSite",
-        name: "MS Tech EBook",
-        url: window.location.origin + "/",
-        description: pages["/"][1]
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": window.location.origin + "/#website",
+            name: "MS Tech EBook",
+            url: window.location.origin + "/",
+            description: pages["/"][1],
+            publisher: { "@id": window.location.origin + "/#organization" }
+          },
+          {
+            "@type": "Organization",
+            "@id": window.location.origin + "/#organization",
+            name: "MS Tech EBook",
+            url: window.location.origin + "/",
+            email: "msinnovatex@gmail.com",
+            parentOrganization: {
+              "@type": "Organization",
+              name: "MS InnovateX"
+            }
+          }
+        ]
       });
       document.head.appendChild(schema);
     }
@@ -917,30 +934,49 @@ function Detail() {
       type: "book",
     });
     const oldSchema = document.getElementById("ms-tech-ebook-book-schema");
+    const oldBreadcrumb = document.getElementById("ms-tech-ebook-breadcrumb-schema");
     if (oldSchema) oldSchema.remove();
+    if (oldBreadcrumb) oldBreadcrumb.remove();
+    const bookUrl = window.location.origin + `/books/${encodeURIComponent(id)}`;
     const schema = document.createElement("script");
     schema.id = "ms-tech-ebook-book-schema";
     schema.type = "application/ld+json";
     schema.textContent = JSON.stringify({
       "@context": "https://schema.org",
       "@type": "Book",
-      url: window.location.origin + `/books/${encodeURIComponent(id)}`,
+      "@id": bookUrl + "#book",
+      url: bookUrl,
       bookFormat: "https://schema.org/EBook",
       name: String(book.title || ""),
       author: { "@type": "Person", name: String(book.author || "MS Tech EBook") },
+      publisher: { "@type": "Organization", name: "MS Tech EBook", url: window.location.origin + "/" },
       description: summary,
       inLanguage: String(book.language || "en"),
+      ...(book.category ? { genre: String(book.category) } : {}),
       ...(book.publishedDate ? { datePublished: book.publishedDate } : {}),
       offers: {
         "@type": "Offer",
         priceCurrency: "INR",
         price: String(book.type === "FREE" ? 0 : Number(book.price || 0)),
         availability: "https://schema.org/InStock",
-        url: window.location.origin + `/books/${encodeURIComponent(id)}`
+        url: bookUrl
       }
     }).replace(/</g, "\\u003c");
+    const breadcrumb = document.createElement("script");
+    breadcrumb.id = "ms-tech-ebook-breadcrumb-schema";
+    breadcrumb.type = "application/ld+json";
+    breadcrumb.textContent = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: window.location.origin + "/" },
+        { "@type": "ListItem", position: 2, name: "Ebooks", item: window.location.origin + "/books" },
+        { "@type": "ListItem", position: 3, name: String(book.title || "Ebook"), item: bookUrl }
+      ]
+    }).replace(/</g, "\\u003c");
     document.head.appendChild(schema);
-    return () => { schema.remove(); };
+    document.head.appendChild(breadcrumb);
+    return () => { schema.remove(); breadcrumb.remove(); };
   }, [book, id]);
 
   async function handleBuy() {
