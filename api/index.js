@@ -2080,6 +2080,48 @@ function verifyTotp(secret, code) {
   return false;
 }
 
+
+function xmlEscape(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+// Dynamic sitemap: includes all currently published books, not just a fixed list.
+// Vercel rewrites /sitemap.xml to this function using the seoPath query parameter.
+app.use(async (req, res, next) => {
+  if (req.method !== "GET" || String(req.query?.seoPath || "") !== "/sitemap.xml") return next();
+  try {
+    const origin = String(process.env.PUBLIC_ORIGIN || "https://ebook-one-jade.vercel.app").replace(/\/+$/, "");
+    const entries = [
+      { path: "/", priority: "1.0", changefreq: "weekly" },
+      { path: "/books", priority: "0.9", changefreq: "daily" },
+      { path: "/refund-policy", priority: "0.3", changefreq: "yearly" }
+    ];
+    const publishedBooks = await listBooks(true, 10000);
+    for (const item of publishedBooks) {
+      const id = String(item.id || "");
+      if (!id) continue;
+      const updated = Number(item.data?.updatedAt || item.data?.createdAt || 0);
+      entries.push({
+        path: "/books/" + encodeURIComponent(id),
+        priority: "0.7",
+        changefreq: "monthly",
+        lastmod: updated > 0 ? new Date(updated).toISOString().slice(0, 10) : ""
+      });
+    }
+    const urls = entries.map(entry => {
+      const lastmod = entry.lastmod ? `\n    <lastmod>${entry.lastmod}</lastmod>` : "";
+      return `  <url>\n    <loc>${xmlEscape(origin + entry.path)}</loc>${lastmod}\n    <changefreq>${entry.changefreq}</changefreq>\n    <priority>${entry.priority}</priority>\n  </url>`;
+    }).join("\n");
+    res.status(200);
+    res.set("Content-Type", "application/xml; charset=utf-8");
+    res.set("Cache-Control", "public, s-maxage=300, stale-while-revalidate=3600");
+    return res.send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`);
+  } catch (error) {
+    console.error("Sitemap generation failed:", error.message);
+    return res.status(503).type("text/plain").send("Sitemap temporarily unavailable");
+  }
+});
+
 // Keep the API surface under /api only. The frontend SPA owns all other routes.
 app.use("/api", router);
 
