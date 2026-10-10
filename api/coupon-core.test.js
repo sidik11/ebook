@@ -26,6 +26,12 @@ test("first redemption atomically increments usage and records entitlement claim
   assert.equal(next.redemptions[hash("user-a")].bookId, "book-a");
 });
 
+test("null initial Firebase transaction snapshot uses the previously read coupon", () => {
+  const next = claim(null, "user-a", "book-a");
+  assert.equal(next.usedCount, 1);
+  assert.equal(next.redemptions[hash("user-a")].bookId, "book-a");
+});
+
 test("retry for same user and book is idempotent and does not increment usage", () => {
   const first = claim(base(), "user-a", "book-a");
   const retry = claim(first, "user-a", "book-a");
