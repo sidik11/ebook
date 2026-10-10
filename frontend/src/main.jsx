@@ -1023,6 +1023,11 @@ function Detail() {
         body: JSON.stringify({ bookId: id, ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}) })
       });
 
+      if (orderData.free) {
+        navigate("/library");
+        return;
+      }
+
       if (!window.Razorpay) {
         throw new Error("Razorpay SDK is not loaded. Please verify your internet connection or ad blocker.");
       }
