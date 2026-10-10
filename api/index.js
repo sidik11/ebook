@@ -1752,14 +1752,17 @@ function couponDiscountPaise(coupon, pricePaise) {
 // Accept legacy expiry timestamps in milliseconds, seconds, or ISO date strings.
 // Older records may have seconds-based timestamps; comparing those directly with
 // now() (milliseconds) incorrectly marks every such coupon as expired.
-function couponExpiryMs(coupon) {
-  const raw = coupon?.expiresAt;
+function couponTimestampMs(raw) {
   if (raw == null || raw === "") return 0;
   let value = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(value)) value = Date.parse(String(raw));
   if (!Number.isFinite(value) || value <= 0) return 0;
+  // Epoch seconds and epoch milliseconds are both present in legacy records.
   if (value < 1e12) value *= 1000;
   return value;
+}
+function couponExpiryMs(coupon) {
+  return couponTimestampMs(coupon?.expiresAt ?? coupon?.expiry ?? coupon?.expires_at);
 }
 function couponStatus(coupon) {
   return String(coupon?.status || "ACTIVE").trim().toUpperCase();
@@ -1767,6 +1770,34 @@ function couponStatus(coupon) {
 function couponExpiryIsPast(coupon, timestamp = now()) {
   const expiry = couponExpiryMs(coupon);
   return expiry > 0 && expiry <= timestamp;
+}
+function couponReservationOwner(entry) {
+  return String(entry?.userId ?? entry?.uid ?? entry?.userKey ?? entry?.ownerId ?? "");
+}
+function couponReservationExpiryMs(entry) {
+  return couponTimestampMs(entry?.expiresAt ?? entry?.expires_at ?? entry?.expiry);
+}
+function couponReservationIsActive(entry, timestamp = now()) {
+  return Boolean(couponReservationOwner(entry)) && couponReservationExpiryMs(entry) > timestamp;
+}
+function couponRedemptionCount(coupon) {
+  const redemptions = coupon?.redemptions && typeof coupon.redemptions === "object" ? coupon.redemptions : {};
+  return Object.values(redemptions).filter(Boolean).length;
+}
+function couponRecordedUses(coupon, usesFromLedger = 0) {
+  return Math.max(0, Number(coupon?.usedCount || 0), couponRedemptionCount(coupon), Number(usesFromLedger || 0));
+}
+function couponLiveReservations(coupon, timestamp = now(), currentUserId = "") {
+  const reservations = coupon?.reservations && typeof coupon.reservations === "object" ? coupon.reservations : {};
+  const currentUserKey = currentUserId ? hash(currentUserId) : "";
+  return Object.values(reservations).filter(entry => {
+    if (!couponReservationIsActive(entry, timestamp)) return false;
+    const owner = couponReservationOwner(entry);
+    if (currentUserId && (owner === currentUserId || owner === currentUserKey)) return false;
+    const ownerKey = owner.length === 64 ? owner : hash(owner);
+    const redemptions = coupon?.redemptions || {};
+    return !redemptions[ownerKey];
+  }).length;
 }
 async function getActiveCoupon(code) {
   if (!/^[A-Z0-9]{12}$/.test(code)) return null;
