@@ -328,7 +328,7 @@ function Layout({ children }) {
     <>
       {!isAdminArea && !isReaderPage && (
         <header>
-          <Link className="brand" to="/">MS Tech EBook</Link>
+          <Link className="brand-lockup" to="/" aria-label="MS Tech EBook — A Product Of MSInnovateX"><span className="brand">MS Tech EBook</span><small className="brand-subtitle">A Product Of MSInnovateX</small></Link>
           <nav>
             <Link to="/books">Store</Link>
             {user ? (
