@@ -1533,10 +1533,49 @@ function Reader() {
   const onActivePage = number => setPageNumber(previous => previous === number ? previous : number);
   const reportRenderError = message => setError(message);
   const goToPage = number => {
-    const next = Math.max(1, Math.min(numPages || 1, number));
+    const next = Math.max(1, Math.min(numPages || 1, Math.trunc(number)));
+    const reader = canvasReaderRef.current;
+    const page = pageRefs.current[next];
+    if (!reader || !page) return;
     setPageNumber(next);
-    pageRefs.current[next]?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Scroll the actual reader container, not the document viewport. This avoids
+    // scrollIntoView choosing an outer page on mobile and keeps the page counter in sync.
+    const readerRect = reader.getBoundingClientRect();
+    const pageRect = page.getBoundingClientRect();
+    const targetTop = reader.scrollTop + pageRect.top - readerRect.top - 14;
+    reader.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
   };
+
+  useEffect(() => {
+    const reader = canvasReaderRef.current;
+    if (!reader || !pdfDoc) return undefined;
+    let frame = 0;
+    const syncPage = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const root = reader.getBoundingClientRect();
+        const focusY = root.top + Math.min(root.height * 0.32, 220);
+        let bestPage = pageNumber;
+        let bestDistance = Infinity;
+        for (const [key, element] of Object.entries(pageRefs.current)) {
+          if (!element) continue;
+          const rect = element.getBoundingClientRect();
+          const distance = focusY < rect.top ? rect.top - focusY : focusY > rect.bottom ? focusY - rect.bottom : 0;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestPage = Number(key);
+          }
+        }
+        if (bestPage && bestPage !== pageNumber) setPageNumber(bestPage);
+      });
+    };
+    reader.addEventListener("scroll", syncPage, { passive: true });
+    syncPage();
+    return () => {
+      reader.removeEventListener("scroll", syncPage);
+      cancelAnimationFrame(frame);
+    };
+  }, [pdfDoc, pageNumber]);
 
   if (error) return <main className="center error"><p>{error}</p></main>;
 
@@ -1559,7 +1598,35 @@ function Reader() {
       {loading || pdfLoading ? (
         <div className="center"><div className="reader-loading"><span className="reader-spinner" />Preparing protected pages…</div></div>
       ) : pdfDoc ? (
-        <div className="canvas-reader" ref={canvasReaderRef} onContextMenu={event => event.preventDefault()}>
+        <div
+          className="canvas-reader"
+          ref={canvasReaderRef}
+          onContextMenu={event => event.preventDefault()}
+          onTouchStart={event => {
+            if (event.touches.length === 2) {
+              const a = event.touches[0], b = event.touches[1];
+              event.currentTarget.dataset.pinchDistance = String(Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY));
+              event.currentTarget.dataset.pinchScale = String(scale);
+            }
+          }}
+          onTouchMove={event => {
+            if (event.touches.length !== 2) return;
+            const a = event.touches[0], b = event.touches[1];
+            const startDistance = Number(event.currentTarget.dataset.pinchDistance || 0);
+            const startScale = Number(event.currentTarget.dataset.pinchScale || scale);
+            if (startDistance < 20) return;
+            event.preventDefault();
+            const distance = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+            const nextScale = Math.max(0.75, Math.min(3, startScale * distance / startDistance));
+            setScale(Number(nextScale.toFixed(2)));
+          }}
+          onTouchEnd={event => {
+            if (event.touches.length < 2) {
+              delete event.currentTarget.dataset.pinchDistance;
+              delete event.currentTarget.dataset.pinchScale;
+            }
+          }}
+        >
           {Array.from({ length: numPages }, (_, index) => (
             <ProtectedPdfPage
               key={id + "-" + (index + 1)}
