@@ -746,3 +746,19 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .admin-featured-toolbar { align-items: stretch; }
   .admin-featured-toolbar .admin-primary { width: 100%; }
 }
+
+/* Protected reader: preserve true PDF canvas dimensions at every zoom level. */
+.canvas-reader{
+  justify-content:flex-start;
+  align-items:flex-start;
+  overflow:auto;
+  touch-action:pan-x pan-y;
+  -webkit-overflow-scrolling:touch;
+}
+.canvas-page{flex-shrink:0;max-width:none;overflow:visible}
+.canvas-page canvas{max-width:none!important;height:auto;flex-shrink:0}
+.reader-controls .reader-fit-button{min-width:74px}
+@media(max-width:700px){
+  .reader{height:100dvh}
+  .canvas-reader{padding:14px 7px 35px;overscroll-behavior:contain}
+}
