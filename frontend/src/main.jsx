@@ -1417,6 +1417,7 @@ function Reader() {
   const [fitScale, setFitScale] = useState(1);
   const canvasReaderRef = useRef(null);
   const pageRefs = useRef({});
+  const pinchPreviewRef = useRef({ startDistance: 0, startScale: 1, previewScale: 1 });
 
   useEffect(() => {
     let active = true;
@@ -1603,27 +1604,36 @@ function Reader() {
           ref={canvasReaderRef}
           onContextMenu={event => event.preventDefault()}
           onTouchStart={event => {
-            if (event.touches.length === 2) {
-              const a = event.touches[0], b = event.touches[1];
-              event.currentTarget.dataset.pinchDistance = String(Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY));
-              event.currentTarget.dataset.pinchScale = String(scale);
-            }
+            if (event.touches.length !== 2) return;
+            const a = event.touches[0], b = event.touches[1];
+            const state = pinchPreviewRef.current;
+            state.startDistance = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+            state.startScale = scale;
+            state.previewScale = scale;
+            event.currentTarget.style.willChange = "transform";
+            event.currentTarget.style.transformOrigin = "top center";
           }}
           onTouchMove={event => {
             if (event.touches.length !== 2) return;
-            const a = event.touches[0], b = event.touches[1];
-            const startDistance = Number(event.currentTarget.dataset.pinchDistance || 0);
-            const startScale = Number(event.currentTarget.dataset.pinchScale || scale);
-            if (startDistance < 20) return;
+            const state = pinchPreviewRef.current;
+            if (state.startDistance < 20) return;
             event.preventDefault();
+            const a = event.touches[0], b = event.touches[1];
             const distance = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
-            const nextScale = Math.max(0.75, Math.min(3, startScale * distance / startDistance));
-            setScale(Number(nextScale.toFixed(2)));
+            const nextScale = Math.max(0.75, Math.min(3, state.startScale * distance / state.startDistance));
+            state.previewScale = nextScale;
+            event.currentTarget.style.transform = "scale(" + (nextScale / state.startScale) + ")";
           }}
           onTouchEnd={event => {
             if (event.touches.length < 2) {
-              delete event.currentTarget.dataset.pinchDistance;
-              delete event.currentTarget.dataset.pinchScale;
+              const state = pinchPreviewRef.current;
+              const reader = event.currentTarget;
+              reader.style.transform = "";
+              reader.style.willChange = "";
+              if (state.startDistance >= 20 && Math.abs(state.previewScale - scale) > 0.015) {
+                setScale(Number(state.previewScale.toFixed(2)));
+              }
+              state.startDistance = 0;
             }
           }}
         >
