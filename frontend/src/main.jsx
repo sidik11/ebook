@@ -175,7 +175,7 @@ async function refreshCachedApi(key, path) {
       const searchIndex = value.books.map(book => ({
         id: String(book.id),
         text: [book.title, book.author, book.category, book.description]
-          .filter(Boolean).join(" ").normalize("NFKD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase()
+          .filter(Boolean).join(" ").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
       }));
       await writeCache("books-search-index", searchIndex);
     }
@@ -631,7 +631,7 @@ function Books() {
         const index = books.map(book => ({
           id: String(book.id),
           text: [book.title, book.author, book.category, book.description]
-            .filter(Boolean).join(" ").normalize("NFKD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase()
+            .filter(Boolean).join(" ").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
         }));
         setSearchIndex(index);
         writeCache("books-search-index", index).catch(() => {});
@@ -665,7 +665,7 @@ function Books() {
 
   const categories = [...new Set(books.map(book => String(book.category || "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
-  const normalizedSearch = search.normalize("NFKD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase();
+  const normalizedSearch = search.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const matchingIds = searchIndex.length
     ? new Set(searchIndex.filter(entry => entry.text.includes(normalizedSearch)).map(entry => entry.id))
     : null;
