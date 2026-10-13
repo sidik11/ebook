@@ -149,9 +149,196 @@ import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams, u
 import "./styles.css";
 import AdminPanel from "./AdminPanel";
 import SAdmin, { SAdminLogin } from "./SAdmin";
+import {
+  readCache, writeCache, readCover, writeCover, readReaderState, writeReaderState,
+  getQueuedRefreshes, queueRefresh, removeQueuedRefresh
+} from "./indexedDb";
 
 // Global CSRF token cache
 let cachedCsrfToken = "";
+
+const PUBLIC_CACHE_TTL_MS = 2 * 60 * 1000;
+const cacheRefreshInFlight = new Set();
+let queueDrainInFlight = false;
+
+function dispatchCacheUpdate(key, value) {
+  window.dispatchEvent(new CustomEvent("ebook-cache-updated", { detail: { key, value } }));
+}
+
+async function refreshCachedApi(key, path) {
+  if (cacheRefreshInFlight.has(key)) return null;
+  cacheRefreshInFlight.add(key);
+  try {
+    const value = await api(path);
+    await writeCache(key, value);
+    await removeQueuedRefresh(key);
+    dispatchCacheUpdate(key, value);
+    return value;
+  } catch (error) {
+    const queue = await getQueuedRefreshes();
+    const previous = queue.find(item => item.key === key);
+    const attempts = Number(previous?.attempts || 0) + 1;
+    // Busy/rate-limited/offline requests are deferred instead of repeatedly
+    // hitting the API. A later idle/online visit will retry this persisted job.
+    if (!error?.status || error.status === 429 || error.status >= 500) {
+      const backoff = Math.min(15 * 60 * 1000, 15000 * (2 ** Math.min(attempts - 1, 6)));
+      const jitter = Math.floor(Math.random() * 5000);
+      await queueRefresh(key, path, attempts, Date.now() + backoff + jitter);
+    }
+    throw error;
+  } finally {
+    cacheRefreshInFlight.delete(key);
+  }
+}
+
+function scheduleCachedApiRefresh(key, path) {
+  const run = () => {
+    if (document.visibilityState === "hidden" || !navigator.onLine) return;
+    refreshCachedApi(key, path).catch(() => {});
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(run, { timeout: 8000 });
+  } else {
+    window.setTimeout(run, 1800);
+  }
+}
+
+async function drainCachedApiQueue() {
+  if (queueDrainInFlight || !navigator.onLine || document.visibilityState === "hidden") return;
+  queueDrainInFlight = true;
+  try {
+    const jobs = await getQueuedRefreshes();
+    for (const job of jobs) {
+      if (!navigator.onLine || document.visibilityState === "hidden") break;
+      if (Number(job.retryAt || 0) > Date.now()) continue;
+      // Run queued refreshes one at a time during idle time, not in a burst.
+      await new Promise(resolve => {
+        const run = async () => {
+          try { await refreshCachedApi(job.key, job.path); } catch {}
+          resolve();
+        };
+        if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 8000 });
+        else window.setTimeout(run, 1800);
+      });
+    }
+  } finally {
+    queueDrainInFlight = false;
+  }
+}
+
+function useCachedApi(key, path) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    let hasCache = false;
+    const apply = value => {
+      if (!active) return;
+      setData(value);
+      setError("");
+      setLoading(false);
+    };
+    const onCacheUpdate = event => {
+      if (event.detail?.key === key) apply(event.detail.value);
+    };
+    const refresh = async () => {
+      try {
+        const value = await refreshCachedApi(key, path);
+        if (active && value) apply(value);
+      } catch (err) {
+        if (active && !hasCache) {
+          setError(err.message || "Could not load this content.");
+          setLoading(false);
+        }
+      }
+    };
+    const onResume = () => {
+      if (document.visibilityState === "visible" && navigator.onLine) {
+        scheduleCachedApiRefresh(key, path);
+        drainCachedApiQueue();
+      }
+    };
+
+    window.addEventListener("ebook-cache-updated", onCacheUpdate);
+    window.addEventListener("online", onResume);
+    document.addEventListener("visibilitychange", onResume);
+
+    readCache(key).then(record => {
+      if (!active) return;
+      if (record && record.value != null) {
+        hasCache = true;
+        apply(record.value);
+        if (Date.now() - Number(record.updatedAt || 0) > PUBLIC_CACHE_TTL_MS) {
+          scheduleCachedApiRefresh(key, path);
+        }
+      } else {
+        refresh();
+      }
+      drainCachedApiQueue();
+    }).catch(() => refresh());
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible" && navigator.onLine) {
+        scheduleCachedApiRefresh(key, path);
+        drainCachedApiQueue();
+      }
+    }, 5 * 60 * 1000);
+
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("ebook-cache-updated", onCacheUpdate);
+      window.removeEventListener("online", onResume);
+      document.removeEventListener("visibilitychange", onResume);
+    };
+  }, [key, path]);
+
+  return { data, loading, error };
+}
+
+function CachedCover({ cacheKey, src, alt, loading = "lazy", width = 700, height = 1000 }) {
+  const [displaySrc, setDisplaySrc] = useState(src || "");
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    setDisplaySrc(src || "");
+    if (!src || !cacheKey) return undefined;
+
+    (async () => {
+      const cached = await readCover(cacheKey);
+      if (!active) return;
+      if (cached?.blob instanceof Blob && cached.blob.size) {
+        objectUrl = URL.createObjectURL(cached.blob);
+        setDisplaySrc(objectUrl);
+        return;
+      }
+      // Show the signed URL immediately; cache its image bytes when CORS permits.
+      try {
+        const response = await fetch(src, { mode: "cors", credentials: "omit" });
+        if (!response.ok) return;
+        const blob = await response.blob();
+        if (!active || !blob.size || !blob.type.startsWith("image/")) return;
+        await writeCover(cacheKey, blob);
+        if (active) {
+          objectUrl = URL.createObjectURL(blob);
+          setDisplaySrc(objectUrl);
+        }
+      } catch {
+        // Some storage/CDN configurations disallow cross-origin blob reads.
+        // The normal image URL remains usable in that case.
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [cacheKey, src]);
+
+  return <img src={displaySrc || src || ""} alt={alt} loading={loading} decoding="async" width={width} height={height} />;
+}
 
 function getCookie(name) {
   const value = `; ${document.cookie}`;
@@ -372,7 +559,7 @@ function Grid({ books = [] }) {
         <Link className="card" to={`/books/${b.id}`} key={b.id}>
           <div className="cover">
             {b.coverUrl ? (
-              <img key={b.id + ":" + (b.coverVersion || b.coverUrl)} src={b.coverUrl} alt={b.title} loading="lazy" decoding="async" width="700" height="1000" />
+              <CachedCover cacheKey={b.id + ":" + (b.coverVersion || b.coverUrl)} src={b.coverUrl} alt={b.title} loading="lazy" />
             ) : (
               <b>MS<br />TECH<br />EBOOK</b>
             )}
@@ -388,16 +575,8 @@ function Grid({ books = [] }) {
 }
 
 function Home() {
-  const [books, setBooks] = useState([]);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api("/api/featured-books")
-      .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+  const { data, error, loading } = useCachedApi("featured-books", "/api/featured-books");
+  const books = Array.isArray(data?.books) ? data.books : [];
 
   return (
     <main className="hero">
@@ -424,18 +603,27 @@ function Home() {
 }
 
 function Books() {
-  const [books, setBooks] = useState([]);
+  const { data, error, loading } = useCachedApi("books-catalog", "/api/books");
+  const books = Array.isArray(data?.books) ? data.books : [];
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("ALL");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api("/api/books")
-      .then(data => setBooks(Array.isArray(data.books) ? data.books : []))
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
+    let active = true;
+    readCache("browse-state").then(record => {
+      if (!active || !record?.value) return;
+      setSearch(String(record.value.search || ""));
+      setSelectedCategory(String(record.value.selectedCategory || "ALL"));
+    });
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      writeCache("browse-state", { search, selectedCategory }).catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [search, selectedCategory]);
 
   const categories = [...new Set(books.map(book => String(book.category || "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
@@ -911,6 +1099,13 @@ function Detail() {
   const [couponBusy, setCouponBusy] = useState(false);
   const [couponMessage, setCouponMessage] = useState({ type: "", text: "" });
   const navigate = useNavigate();
+  const { data: cachedBookResponse, loading: cachedBookLoading, error: cachedBookError } = useCachedApi("book:" + id, "/api/books/" + encodeURIComponent(id));
+
+  useEffect(() => {
+    if (cachedBookResponse?.book) setBook(cachedBookResponse.book);
+    if (cachedBookError && !cachedBookResponse) setError(cachedBookError);
+    setLoading(cachedBookLoading);
+  }, [cachedBookResponse, cachedBookError, cachedBookLoading]);
 
   useEffect(() => {
     setCouponCode("");
@@ -918,10 +1113,7 @@ function Detail() {
     setAppliedCoupon(null);
     setCouponMessage({ type: "", text: "" });
     setLoading(true);
-    api(`/api/books/${id}`)
-      .then(res => setBook(res.book))
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false));
+    setError("");
 
     if (user) {
       api("/api/library")
@@ -1106,7 +1298,7 @@ function Detail() {
     <main className="detail">
       <div className="cover big">
         {book.coverUrl ? (
-          <img key={book.id + ":" + (book.coverVersion || book.coverUrl)} src={book.coverUrl} alt={book.title} loading="eager" decoding="async" width="700" height="1000" />
+          <CachedCover cacheKey={book.id + ":" + (book.coverVersion || book.coverUrl)} src={book.coverUrl} alt={book.title} loading="eager" />
         ) : (
           <b>MS<br />TECH<br />EBOOK</b>
         )}
@@ -1421,12 +1613,25 @@ function Reader() {
 
   useEffect(() => {
     let active = true;
+    readReaderState("reader:" + id).then(saved => {
+      if (!active || !saved) return;
+      setPageNumber(Math.max(1, Number(saved.pageNumber) || 1));
+      setScale(Math.max(0.75, Math.min(3, Number(saved.scale) || 1)));
+    }).catch(() => {});
     api(`/api/books/${id}/secure-url`)
       .then(res => { if (active) setUrl(res.url); })
       .catch(e => { if (active) setError(e.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [id]);
+
+  useEffect(() => {
+    if (!id) return undefined;
+    const timer = window.setTimeout(() => {
+      writeReaderState("reader:" + id, { pageNumber, scale, updatedAt: Date.now() }).catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [id, pageNumber, scale]);
 
   useEffect(() => {
     if (!url) return;
