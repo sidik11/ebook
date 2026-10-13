@@ -1360,7 +1360,7 @@ router.get("/admin/books/:id/preview-url", async (req, res) => {
       url = await r2SignedGet(book.storagePath);
     } else {
       const bucket = requireBucket();
-      [url] = await bucket.file(book.storagePath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline", contentType: "application/pdf" });
+      [url] = await bucket.file(book.storagePath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline" });
     }
     res.json({ url, expiresIn: SIGNED_URL_MS / 1000 });
   } catch (e) {
