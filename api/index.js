@@ -1326,9 +1326,45 @@ router.get("/admin/books", async (req, res) => {
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
     const books = await listBooks(false, 10000);
-    res.json({ books: books.map(b => ({ id: b.id, ...b.data })) });
+    const enriched = await Promise.all(books.map(async b => {
+      let coverUrl = null;
+      if (b.data.coverPath) {
+        try {
+          if (isR2Book(b.data)) coverUrl = await r2SignedGet(b.data.coverPath);
+          else {
+            const bucket = requireBucket();
+            const [url] = await bucket.file(b.data.coverPath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline" });
+            coverUrl = url;
+          }
+        } catch {}
+      }
+      return { id: b.id, ...b.data, coverUrl };
+    }));
+    res.json({ books: enriched });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load admin books" });
+  }
+});
+
+router.get("/admin/books/:id/preview-url", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    res.set("Cache-Control", "no-store, max-age=0");
+    const id = key(req.params.id);
+    const book = await get("books/" + id);
+    if (!book || !book.storagePath) return res.status(404).json({ error: "Book or PDF not found." });
+    let url;
+    if (isR2Book(book)) {
+      if (!isR2Path(book.storagePath) || !String(book.storagePath).startsWith("private/ebooks/")) return res.status(400).json({ error: "Invalid PDF storage path." });
+      url = await r2SignedGet(book.storagePath);
+    } else {
+      const bucket = requireBucket();
+      [url] = await bucket.file(book.storagePath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline", contentType: "application/pdf" });
+    }
+    res.json({ url, expiresIn: SIGNED_URL_MS / 1000 });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not prepare secure PDF preview." });
   }
 });
 
@@ -1757,9 +1793,30 @@ router.patch("/admin/books/:id", async (req, res) => {
       if (!isValidDateOnly(publishedDate)) return res.status(400).json({ error: "Choose a valid published date." });
       changes.publishedDate = publishedDate;
     }
+    let oldCoverPath = "";
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "coverPath")) {
+      const coverPath = String(req.body.coverPath || "");
+      if (!/^private\/covers\/[a-f0-9-]+\.webp$/.test(coverPath)) return res.status(400).json({ error: "Replacement cover must be a valid private R2 WebP path." });
+      const r2 = requireR2();
+      let metadata;
+      try { metadata = await r2.client.send(new HeadObjectCommand({ Bucket: r2.bucket, Key: coverPath })); }
+      catch { return res.status(400).json({ error: "Replacement cover upload could not be verified." }); }
+      if (Number(metadata.ContentLength || 0) <= 0 || Number(metadata.ContentLength || 0) > STORAGE_UPLOADS["image/webp"].max || String(metadata.ContentType || "").toLowerCase() !== "image/webp") {
+        return res.status(400).json({ error: "Replacement cover must be a verified WebP image under 350 KB." });
+      }
+      oldCoverPath = String(existing.coverPath || "");
+      changes.coverPath = coverPath;
+      changes.storageProvider = "r2";
+    }
     if (!title || !type || !status || (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE))) return res.status(400).json({ error: "Invalid book details" });
     await update(bookPath, changes);
-    await audit("BOOK_UPDATED", auth, { bookId: req.params.id });
+    if (oldCoverPath && oldCoverPath !== changes.coverPath && isR2Book(existing) && isR2Path(oldCoverPath)) {
+      try {
+        const r2 = requireR2();
+        await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: oldCoverPath }));
+      } catch (err) { console.warn("Old cover cleanup failed:", err.message); }
+    }
+    await audit("BOOK_UPDATED", auth, { bookId: req.params.id, coverChanged: Boolean(changes.coverPath) });
     res.json({ ok: true });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Book could not be updated" });
