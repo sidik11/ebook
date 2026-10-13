@@ -234,6 +234,9 @@ function useCachedApi(key, path) {
   useEffect(() => {
     let active = true;
     let hasCache = false;
+    setData(null);
+    setError("");
+    setLoading(true);
     const apply = value => {
       if (!active) return;
       setData(value);
@@ -1112,7 +1115,6 @@ function Detail() {
     setShowCouponEntry(false);
     setAppliedCoupon(null);
     setCouponMessage({ type: "", text: "" });
-    setLoading(true);
     setError("");
 
     if (user) {
@@ -1609,15 +1611,13 @@ function Reader() {
   const [fitScale, setFitScale] = useState(1);
   const canvasReaderRef = useRef(null);
   const pageRefs = useRef({});
+  const readerStatePromiseRef = useRef(null);
+  const restorePageRef = useRef(0);
   const pinchPreviewRef = useRef({ startDistance: 0, startScale: 1, previewScale: 1 });
 
   useEffect(() => {
     let active = true;
-    readReaderState("reader:" + id).then(saved => {
-      if (!active || !saved) return;
-      setPageNumber(Math.max(1, Number(saved.pageNumber) || 1));
-      setScale(Math.max(0.75, Math.min(3, Number(saved.scale) || 1)));
-    }).catch(() => {});
+    readerStatePromiseRef.current = readReaderState("reader:" + id).catch(() => null);
     api(`/api/books/${id}/secure-url`)
       .then(res => { if (active) setUrl(res.url); })
       .catch(e => { if (active) setError(e.message); })
@@ -1626,12 +1626,12 @@ function Reader() {
   }, [id]);
 
   useEffect(() => {
-    if (!id) return undefined;
+    if (!id || !pdfDoc) return undefined;
     const timer = window.setTimeout(() => {
       writeReaderState("reader:" + id, { pageNumber, scale, updatedAt: Date.now() }).catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [id, pageNumber, scale]);
+  }, [id, pageNumber, scale, pdfDoc]);
 
   useEffect(() => {
     if (!url) return;
@@ -1655,7 +1655,16 @@ function Reader() {
           await document.destroy();
           return;
         }
+        const saved = await (readerStatePromiseRef.current || Promise.resolve(null));
+        if (!active) {
+          await document.destroy();
+          return;
+        }
+        const restoredPage = Math.max(1, Math.min(document.numPages || 1, Number(saved?.pageNumber) || 1));
+        restorePageRef.current = restoredPage;
+        if (saved) setScale(Math.max(0.75, Math.min(3, Number(saved.scale) || 1)));
         pageRefs.current = {};
+        setPageNumber(restoredPage);
         setPdfDoc(document);
         setNumPages(document.numPages);
       } catch (e) {
@@ -1670,6 +1679,28 @@ function Reader() {
       try { loadingTask?.destroy(); } catch {}
     };
   }, [url]);
+
+  useEffect(() => {
+    if (!pdfDoc || !restorePageRef.current) return undefined;
+    const targetPage = restorePageRef.current;
+    let timer = 0;
+    let attempts = 0;
+    const restoreScroll = () => {
+      attempts += 1;
+      const reader = canvasReaderRef.current;
+      const page = pageRefs.current[targetPage];
+      if (reader && page) {
+        const readerRect = reader.getBoundingClientRect();
+        const pageRect = page.getBoundingClientRect();
+        reader.scrollTop = Math.max(0, reader.scrollTop + pageRect.top - readerRect.top - 14);
+        restorePageRef.current = 0;
+        return;
+      }
+      if (attempts < 20) timer = window.setTimeout(restoreScroll, 100);
+    };
+    timer = window.setTimeout(restoreScroll, 100);
+    return () => window.clearTimeout(timer);
+  }, [pdfDoc, numPages]);
 
   useEffect(() => {
     const reader = canvasReaderRef.current;
