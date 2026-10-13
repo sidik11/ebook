@@ -402,7 +402,8 @@ async function publicBook(bookId, data) {
     description: safeText(data?.description, MAX_DESCRIPTION),
     type: normalizedType,
     price: normalizedType === "FREE" ? 0 : rawPrice,
-    status: "ACTIVE"
+    status: "ACTIVE",
+    coverVersion: Number(data?.coverUpdatedAt || data?.updatedAt || data?.createdAt || 0)
   };
   delete book.storagePath;
   delete book.coverPath;
@@ -1807,6 +1808,7 @@ router.patch("/admin/books/:id", async (req, res) => {
       oldCoverPath = String(existing.coverPath || "");
       changes.coverPath = coverPath;
       changes.coverStorageProvider = "r2";
+      changes.coverUpdatedAt = now();
     }
     if (!title || !type || !status || (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE))) return res.status(400).json({ error: "Invalid book details" });
     await update(bookPath, changes);
