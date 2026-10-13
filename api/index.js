@@ -409,7 +409,7 @@ async function publicBook(bookId, data) {
   delete book.storageProvider;
   if (data.coverPath) {
     try {
-      if (isR2Book(data)) book.coverUrl = await r2SignedGet(data.coverPath);
+      if (data.coverStorageProvider === "r2" || isR2Book(data)) book.coverUrl = await r2SignedGet(data.coverPath);
       else {
         const bucket = requireBucket();
         const [url] = await bucket.file(data.coverPath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline" });
@@ -1330,7 +1330,7 @@ router.get("/admin/books", async (req, res) => {
       let coverUrl = null;
       if (b.data.coverPath) {
         try {
-          if (isR2Book(b.data)) coverUrl = await r2SignedGet(b.data.coverPath);
+          if (b.data.coverStorageProvider === "r2" || isR2Book(b.data)) coverUrl = await r2SignedGet(b.data.coverPath);
           else {
             const bucket = requireBucket();
             const [url] = await bucket.file(b.data.coverPath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline" });
@@ -1806,14 +1806,21 @@ router.patch("/admin/books/:id", async (req, res) => {
       }
       oldCoverPath = String(existing.coverPath || "");
       changes.coverPath = coverPath;
-      changes.storageProvider = "r2";
+      changes.coverStorageProvider = "r2";
     }
     if (!title || !type || !status || (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE))) return res.status(400).json({ error: "Invalid book details" });
     await update(bookPath, changes);
-    if (oldCoverPath && oldCoverPath !== changes.coverPath && isR2Book(existing) && isR2Path(oldCoverPath)) {
+    if (oldCoverPath && oldCoverPath !== changes.coverPath) {
       try {
-        const r2 = requireR2();
-        await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: oldCoverPath }));
+        if (existing.coverStorageProvider === "r2" || isR2Book(existing)) {
+          if (isR2Path(oldCoverPath)) {
+            const r2 = requireR2();
+            await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: oldCoverPath }));
+          }
+        } else {
+          const bucket = requireBucket();
+          await bucket.file(oldCoverPath).delete();
+        }
       } catch (err) { console.warn("Old cover cleanup failed:", err.message); }
     }
     await audit("BOOK_UPDATED", auth, { bookId: req.params.id, coverChanged: Boolean(changes.coverPath) });
@@ -1830,15 +1837,23 @@ router.delete("/admin/books/:id", async (req, res) => {
     const bookPath = "books/" + key(req.params.id);
     const book = await get(bookPath);
     if (!book) return res.status(404).json({ error: "Book not found" });
-    if (isR2Book(book)) {
+    const pdfIsR2 = isR2Book(book);
+    const coverIsR2 = book.coverStorageProvider === "r2" || pdfIsR2;
+    if (pdfIsR2 || coverIsR2) {
       const r2 = requireR2();
-      for (const storagePath of [book.storagePath, book.coverPath]) {
-        if (storagePath) { try { await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: storagePath })); } catch (e) { console.warn("R2 delete file error:", e.message); } }
+      if (pdfIsR2 && book.storagePath) {
+        try { await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: book.storagePath })); }
+        catch (e) { console.warn("R2 PDF delete error:", e.message); }
       }
-    } else {
+      if (coverIsR2 && book.coverPath) {
+        try { await r2.client.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: book.coverPath })); }
+        catch (e) { console.warn("R2 cover delete error:", e.message); }
+      }
+    }
+    if (!pdfIsR2 || !coverIsR2) {
       const bucket = requireBucket();
-      for (const storagePath of [book.storagePath, book.coverPath]) {
-        if (storagePath) { try { await bucket.file(storagePath).delete(); } catch (e) { if (e.code !== 404) console.warn("Delete file error:", e.message); } }
+      for (const storagePath of [!pdfIsR2 ? book.storagePath : null, !coverIsR2 ? book.coverPath : null]) {
+        if (storagePath) { try { await bucket.file(storagePath).delete(); } catch (e) { if (e.code !== 404) console.warn("Legacy storage delete error:", e.message); } }
       }
     }
     await remove(bookPath);
