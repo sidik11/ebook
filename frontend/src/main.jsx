@@ -610,23 +610,30 @@ function Books() {
   const books = Array.isArray(data?.books) ? data.books : [];
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("ALL");
+  const [browseStateReady, setBrowseStateReady] = useState(false);
 
   useEffect(() => {
     let active = true;
     readCache("browse-state").then(record => {
-      if (!active || !record?.value) return;
-      setSearch(String(record.value.search || ""));
-      setSelectedCategory(String(record.value.selectedCategory || "ALL"));
+      if (!active) return;
+      if (record?.value) {
+        setSearch(String(record.value.search || ""));
+        setSelectedCategory(String(record.value.selectedCategory || "ALL"));
+      }
+      setBrowseStateReady(true);
+    }).catch(() => {
+      if (active) setBrowseStateReady(true);
     });
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
+    if (!browseStateReady) return undefined;
     const timer = window.setTimeout(() => {
       writeCache("browse-state", { search, selectedCategory }).catch(() => {});
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [search, selectedCategory]);
+  }, [search, selectedCategory, browseStateReady]);
 
   const categories = [...new Set(books.map(book => String(book.category || "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
