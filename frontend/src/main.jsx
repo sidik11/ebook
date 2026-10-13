@@ -171,6 +171,14 @@ async function refreshCachedApi(key, path) {
   try {
     const value = await api(path);
     await writeCache(key, value);
+    if (key === "books-catalog" && Array.isArray(value?.books)) {
+      const searchIndex = value.books.map(book => ({
+        id: String(book.id),
+        text: [book.title, book.author, book.category, book.description]
+          .filter(Boolean).join(" ").normalize("NFKD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase()
+      }));
+      await writeCache("books-search-index", searchIndex);
+    }
     await removeQueuedRefresh(key);
     dispatchCacheUpdate(key, value);
     return value;
@@ -611,6 +619,26 @@ function Books() {
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("ALL");
   const [browseStateReady, setBrowseStateReady] = useState(false);
+  const [searchIndex, setSearchIndex] = useState([]);
+
+  useEffect(() => {
+    let active = true;
+    readCache("books-search-index").then(record => {
+      if (!active) return;
+      if (Array.isArray(record?.value)) {
+        setSearchIndex(record.value);
+      } else {
+        const index = books.map(book => ({
+          id: String(book.id),
+          text: [book.title, book.author, book.category, book.description]
+            .filter(Boolean).join(" ").normalize("NFKD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase()
+        }));
+        setSearchIndex(index);
+        writeCache("books-search-index", index).catch(() => {});
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [data]);
 
   useEffect(() => {
     let active = true;
@@ -637,9 +665,15 @@ function Books() {
 
   const categories = [...new Set(books.map(book => String(book.category || "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
+  const normalizedSearch = search.normalize("NFKD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase();
+  const matchingIds = searchIndex.length
+    ? new Set(searchIndex.filter(entry => entry.text.includes(normalizedSearch)).map(entry => entry.id))
+    : null;
   const filtered = books.filter(b => {
     const matchesCategory = selectedCategory === "ALL" || String(b.category || "").trim() === selectedCategory;
-    const matchesSearch = `${b.title} ${b.author || ""} ${b.category || ""}`.toLowerCase().includes(search.toLowerCase());
+    const matchesSearch = matchingIds
+      ? matchingIds.has(String(b.id))
+      : `${b.title} ${b.author || ""} ${b.category || ""} ${b.description || ""}`.toLowerCase().includes(normalizedSearch);
     return matchesCategory && matchesSearch;
   });
 
