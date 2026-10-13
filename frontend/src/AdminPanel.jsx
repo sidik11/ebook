@@ -135,6 +135,7 @@ function AdminPanel() {
   const [uploadState, setUploadState] = useState(emptyUploadState);
 
   const [editing, setEditing] = useState(null);
+  const [editingCover, setEditingCover] = useState(null);
   const [editBusy, setEditBusy] = useState(false);
 
   const [initialized, setInitialized] = useState(false);
@@ -574,28 +575,58 @@ function AdminPanel() {
       price: book.price || "",
       type: book.type || "PAID",
       status: book.status || "ACTIVE",
+      coverUrl: book.coverUrl || "",
     });
+    setEditingCover(null);
   };
 
   const saveEdit = async event => {
     event.preventDefault();
     if (!editing) return;
     setEditBusy(true);
+    let replacementCoverPath = "";
     try {
+      if (editingCover) {
+        const optimized = await compressCoverImage(editingCover);
+        replacementCoverPath = await uploadDirect(optimized.file, "cover", "Replacement cover");
+      }
       await api("/api/admin/books/" + editing.id, {
         method: "PATCH",
         body: JSON.stringify({
           ...editing,
+          ...(replacementCoverPath ? { coverPath: replacementCoverPath } : {}),
           price: editing.type === "FREE" ? 0 : Number(editing.price),
         }),
       });
       await loadBooks();
       setEditing(null);
-      showNotice("success", "Book details updated.");
+      setEditingCover(null);
+      showNotice("success", replacementCoverPath ? "Book details and cover page updated." : "Book details updated.");
     } catch (err) {
+      if (replacementCoverPath) {
+        try { await api("/api/admin/upload-file", { method: "DELETE", body: JSON.stringify({ path: replacementCoverPath }) }); } catch {}
+      }
       showNotice("error", err.message || "Could not update this book.");
     } finally {
       setEditBusy(false);
+    }
+  };
+
+  const previewSubmittedBook = async book => {
+    const previewWindow = window.open("about:blank", "_blank");
+    if (!previewWindow) {
+      showNotice("error", "Allow pop-ups to preview the submitted PDF.");
+      return;
+    }
+    previewWindow.document.title = "Preparing ebook preview…";
+    previewWindow.document.body.textContent = "Preparing secure preview…";
+    try {
+      const data = await api("/api/admin/books/" + encodeURIComponent(book.id) + "/preview-url");
+      if (!data.url) throw new Error("Preview URL was not returned.");
+      previewWindow.location.replace(data.url);
+    } catch (err) {
+      previewWindow.close();
+      showNotice("error", err.message || "Could not open the full book preview.");
     }
   };
 
@@ -1235,7 +1266,10 @@ function AdminPanel() {
             <div className="admin-card">
               <SectionHeading eyebrow="PUBLISHING GATE" title="Books awaiting review" subtitle="Only the main administrator can publish sub-admin submissions." />
               {books.filter(book=>book.status==="PENDING_REVIEW").length ? books.filter(book=>book.status==="PENDING_REVIEW").map(book=><article key={book.id} style={{borderBottom:"1px solid var(--border,#ddd)",padding:"16px 0"}}>
-                <h3>{book.title}</h3><p>{book.author || "Unknown author"} · {book.type==="FREE"?"Free":formatMoney(book.price)}</p>
+                <div style={{display:"flex",gap:14,alignItems:"flex-start",marginBottom:12}}>
+                  {book.coverUrl ? <img src={book.coverUrl} alt={"Cover for " + book.title} style={{width:92,height:128,objectFit:"cover",borderRadius:8,border:"1px solid var(--border,#ddd)",flexShrink:0}} /> : <div style={{width:92,height:128,display:"grid",placeItems:"center",border:"1px solid var(--border,#ddd)",borderRadius:8}}><FileText size={24}/></div>}
+                  <div><h3>{book.title}</h3><p>{book.author || "Unknown author"} · {book.type==="FREE"?"Free":formatMoney(book.price)}</p><p style={{fontSize:13,opacity:.8}}>Submitted by {book.createdBy || "sub-admin"} · {book.description || "No description provided."}</p><button type="button" className="admin-secondary" disabled={staffBusy} onClick={()=>previewSubmittedBook(book)}><ExternalLink size={15}/> Preview full PDF</button></div>
+                </div>
                 <label style={{display:"grid",gap:6,margin:"12px 0"}}>
                   <strong>Published date *</strong>
                   <input type="date" value={reviewPublishedDates[book.id] || localDateInput()} onChange={e=>setReviewPublishedDates(v=>({...v,[book.id]:e.target.value}))} required />
@@ -1379,6 +1413,17 @@ function AdminPanel() {
               </Field>
               <Field label="Description">
                 <textarea rows={6} value={editing.description} onChange={e => setEditing({ ...editing, description: e.target.value })} />
+              </Field>
+              <Field label="Current cover page">
+                <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                  {editing.coverUrl ? <img src={editing.coverUrl} alt={"Current cover for " + editing.title} style={{width:92,height:128,objectFit:"cover",borderRadius:8,border:"1px solid var(--border,#ddd)"}} /> : <span>No cover preview available</span>}
+                  <span>Choose a replacement below if you want to change it.</span>
+                </div>
+              </Field>
+              <Field label="Replace cover page (optional)">
+                <input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={e => setEditingCover(e.target.files?.[0] || null)} />
+                <small>Image is automatically compressed to WebP before secure upload.</small>
+                {editingCover && <small>Selected: {editingCover.name}</small>}
               </Field>
               <Field label="Publishing status">
                 <select value={editing.status} onChange={e => setEditing({ ...editing, status: e.target.value })}>
