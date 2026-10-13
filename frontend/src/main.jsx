@@ -1118,6 +1118,13 @@ function Detail() {
   }, [cachedBookResponse, cachedBookError, cachedBookLoading]);
 
   useEffect(() => {
+    setBook(null);
+    setLoading(true);
+    setError("");
+    setOwned(false);
+  }, [id]);
+
+  useEffect(() => {
     setCouponCode("");
     setShowCouponEntry(false);
     setAppliedCoupon(null);
