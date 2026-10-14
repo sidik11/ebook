@@ -1416,22 +1416,24 @@ function Detail() {
         <h1>{book.title}</h1>
         <div className="book-share-row"><button type="button" className="secondary book-share-button" onClick={handleShareBook} disabled={sharing}><span aria-hidden="true">↗</span> {sharing ? "Preparing share…" : "Share book"}</button><span>Share the title, cover and book link</span></div>
         {shareMessage && <p role="status" className="book-share-message">{shareMessage}</p>}
+        {canRead ? (
+          <Link className="primary" to={`/read/${id}`}>Read Now</Link>
+        ) : (
+          <button className="primary" onClick={handleBuy} disabled={buying}>
+            {buying ? (appliedCoupon && Number(appliedCoupon.finalPrice) === 0 ? "Adding to My Library..." : "Initiating...") : (appliedCoupon && Number(appliedCoupon.finalPrice) === 0 ? "Get free access · Add to Library" : `Buy for ₹${appliedCoupon ? Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "") : Number(book.price || 0)}`)}
+          </button>
+        )}
         <p style={{ color: "#8b949e", marginBottom: "8px" }}>By {book.author || "MS Tech EBook"}</p>
         {book.publishedDate && <p style={{ color: "#8b949e", fontSize: "14px", marginBottom: "16px" }}>Published {new Date(book.publishedDate + "T00:00:00").toLocaleDateString()}</p>}
         <p style={{ whiteSpace: "pre-line" }}>{book.description}</p>
         <div className="book-purchase-pricing">
           {appliedCoupon ? <><span className="book-original-price">₹{Number(book.price || 0).toFixed(2).replace(/\.00$/, "")}</span><h2>₹{Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "")}</h2><span className="book-discount-badge">{appliedCoupon.discountPercent}% OFF</span></> : <h2>{isFree ? "Free" : `₹${Number(book.price || 0)}`}</h2>}
         </div>
-        {canRead ? (
-          <Link className="primary" to={`/read/${id}`}>Read Now</Link>
-        ) : (
+        {!canRead && (
           <>
-            <button className="primary" onClick={handleBuy} disabled={buying}>
-              {buying ? (appliedCoupon && Number(appliedCoupon.finalPrice) === 0 ? "Adding to My Library..." : "Initiating...") : (appliedCoupon && Number(appliedCoupon.finalPrice) === 0 ? "Get free access · Add to Library" : `Buy for ₹${appliedCoupon ? Number(appliedCoupon.finalPrice).toFixed(2).replace(/\\.00$/, "") : Number(book.price || 0)}`)}
-            </button>
             {!isFree && !appliedCoupon && <button type="button" className="coupon-toggle-link" onClick={() => { setShowCouponEntry(value => !value); setCouponMessage({type:"",text:""}); }}>
               {showCouponEntry ? "Cancel coupon" : "Apply a coupon"}
-            </button>}
+            </button>
             {!isFree && (showCouponEntry || appliedCoupon) && <section className="book-coupon-panel" aria-label="Apply coupon">
               <div className="book-coupon-heading"><strong>Have a coupon?</strong><span>Save on this ebook</span></div>
               {appliedCoupon ? <div className="book-coupon-applied"><span><b>{appliedCoupon.code}</b> applied · {appliedCoupon.discountPercent}% off</span><button type="button" onClick={() => { setAppliedCoupon(null); setCouponMessage({type:"",text:""}); }}>Remove</button></div> : <div className="book-coupon-controls"><input aria-label="12-character coupon code" autoComplete="off" maxLength={12} value={couponCode} type="text" inputMode="text" autoCapitalize="characters" spellCheck={false} onChange={e => { setCouponCode(e.currentTarget.value.slice(0,12).toUpperCase()); setCouponMessage({type:"",text:""}); }} placeholder="Enter 12-character code" /><button type="button" className="book-coupon-apply" disabled={couponBusy || couponCode.length !== 12} onClick={applyCoupon}>{couponBusy ? "Checking…" : "Apply coupon"}</button></div>}
