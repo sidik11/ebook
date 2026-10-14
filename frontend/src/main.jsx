@@ -1433,7 +1433,7 @@ function Detail() {
           <>
             {!isFree && !appliedCoupon && <button type="button" className="coupon-toggle-link" onClick={() => { setShowCouponEntry(value => !value); setCouponMessage({type:"",text:""}); }}>
               {showCouponEntry ? "Cancel coupon" : "Apply a coupon"}
-            </button>
+            </button>}
             {!isFree && (showCouponEntry || appliedCoupon) && <section className="book-coupon-panel" aria-label="Apply coupon">
               <div className="book-coupon-heading"><strong>Have a coupon?</strong><span>Save on this ebook</span></div>
               {appliedCoupon ? <div className="book-coupon-applied"><span><b>{appliedCoupon.code}</b> applied · {appliedCoupon.discountPercent}% off</span><button type="button" onClick={() => { setAppliedCoupon(null); setCouponMessage({type:"",text:""}); }}>Remove</button></div> : <div className="book-coupon-controls"><input aria-label="12-character coupon code" autoComplete="off" maxLength={12} value={couponCode} type="text" inputMode="text" autoCapitalize="characters" spellCheck={false} onChange={e => { setCouponCode(e.currentTarget.value.slice(0,12).toUpperCase()); setCouponMessage({type:"",text:""}); }} placeholder="Enter 12-character code" /><button type="button" className="book-coupon-apply" disabled={couponBusy || couponCode.length !== 12} onClick={applyCoupon}>{couponBusy ? "Checking…" : "Apply coupon"}</button></div>}
