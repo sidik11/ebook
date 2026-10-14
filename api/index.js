@@ -444,8 +444,12 @@ let publicCatalogCache = null;
 let publicCatalogLoad = null;
 let featuredBookIdsCache = null;
 let featuredBookIdsLoad = null;
+let publicCatalogCacheVersion = 0;
 
 function invalidatePublicCatalogCache() {
+  // The version guard prevents a Firebase read started before a write from
+  // repopulating the cache with stale data after invalidation.
+  publicCatalogCacheVersion += 1;
   publicCatalogCache = null;
   publicCatalogLoad = null;
   featuredBookIdsCache = null;
@@ -459,16 +463,20 @@ async function getPublicCatalog() {
   }
   if (publicCatalogLoad) return publicCatalogLoad;
 
-  publicCatalogLoad = (async () => {
+  const version = publicCatalogCacheVersion;
+  const load = (async () => {
     const books = await listBooks(true, 100);
-    publicCatalogCache = { cachedAt: now(), books };
+    if (version === publicCatalogCacheVersion) {
+      publicCatalogCache = { cachedAt: now(), books };
+    }
     return books;
   })();
+  publicCatalogLoad = load;
 
   try {
-    return await publicCatalogLoad;
+    return await load;
   } finally {
-    publicCatalogLoad = null;
+    if (publicCatalogLoad === load) publicCatalogLoad = null;
   }
 }
 
@@ -479,17 +487,21 @@ async function getFeaturedBookIds() {
   }
   if (featuredBookIdsLoad) return featuredBookIdsLoad;
 
-  featuredBookIdsLoad = (async () => {
+  const version = publicCatalogCacheVersion;
+  const load = (async () => {
     const stored = await get("settings/featuredBookIds");
     const ids = Array.isArray(stored) ? stored.filter(id => typeof id === "string").slice(0, 6) : [];
-    featuredBookIdsCache = { cachedAt: now(), ids };
+    if (version === publicCatalogCacheVersion) {
+      featuredBookIdsCache = { cachedAt: now(), ids };
+    }
     return ids;
   })();
+  featuredBookIdsLoad = load;
 
   try {
-    return await featuredBookIdsLoad;
+    return await load;
   } finally {
-    featuredBookIdsLoad = null;
+    if (featuredBookIdsLoad === load) featuredBookIdsLoad = null;
   }
 }
 
