@@ -483,6 +483,8 @@ function SeoManager() {
       "/": ["MS Tech EBook | Buy and Read Ebooks Online", "Discover, buy, and read ebooks online with MS Tech EBook. Explore digital books across categories and access your library anytime."],
       "/books": ["Browse Ebooks Online | MS Tech EBook", "Explore ebooks by title, author, and category on MS Tech EBook. Discover digital books, compare details, and find your next read."],
       "/refund-policy": ["Refund Policy | MS Tech EBook", "Read the MS Tech EBook refund policy for digital purchases, payment issues, and support eligibility."],
+      "/privacy-policy": ["Privacy Policy | MS Tech EBook", "Learn how MS Tech EBook collects, uses, stores, and protects account, purchase, and support information."],
+      "/terms-of-service": ["Terms of Service | MS Tech EBook", "Read the terms for using MS Tech EBook, purchasing digital books, account access, and acceptable use."],
       "/support": ["Customer Support | MS Tech EBook", "Contact MS Tech EBook support for payment problems, duplicate charges, and ebook access issues."]
     };
     const isPrivate = /^\/(admin|sadmin|read|library|login|register|change-password|forgot-password|reset-password|setadmin)(\/|$)/.test(path);
@@ -572,6 +574,8 @@ function Layout({ children }) {
           <p>© {new Date().getFullYear()} MS Tech EBook. All rights reserved.</p>
           <nav aria-label="Customer support">
             <Link to="/refund-policy">Refund Policy</Link>
+            <Link to="/privacy-policy">Privacy Policy</Link>
+            <Link to="/terms-of-service">Terms of Service</Link>
             <Link to="/support">Raise a Complaint</Link>
             <a href="mailto:msinnovatex@gmail.com">msinnovatex@gmail.com</a>
             <a href="mailto:Info@msinnovatex.com">Info@msinnovatex.com</a>
@@ -1160,6 +1164,8 @@ function Detail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [buying, setBuying] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareMessage, setShareMessage] = useState("");
   const [couponCode, setCouponCode] = useState("");
   const [showCouponEntry, setShowCouponEntry] = useState(false);
   const [appliedCoupon, setAppliedCoupon] = useState(null);
@@ -1220,6 +1226,7 @@ function Detail() {
       path: `/books/${encodeURIComponent(id)}`,
       noindex: false,
       type: "book",
+      image: book.coverUrl || "",
     });
     const oldSchema = document.getElementById("ms-tech-ebook-book-schema");
     const oldBreadcrumb = document.getElementById("ms-tech-ebook-breadcrumb-schema");
@@ -1266,6 +1273,34 @@ function Detail() {
     document.head.appendChild(breadcrumb);
     return () => { schema.remove(); breadcrumb.remove(); };
   }, [book, id]);
+
+  async function handleShareBook() {
+    if (!book || sharing) return;
+    setSharing(true); setShareMessage("");
+    const url = window.location.origin + "/books/" + encodeURIComponent(id);
+    const title = String(book.title || "Ebook").trim();
+    const text = `Read "${title}" on MS Tech EBook.`;
+    try {
+      if (book.coverUrl && typeof navigator.share === "function" && typeof navigator.canShare === "function") {
+        try {
+          const response = await fetch(book.coverUrl, { mode: "cors" });
+          if (response.ok) {
+            const blob = await response.blob(), mime = blob.type || "image/jpeg";
+            const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+            const cover = new File([blob], `${title.replace(/[^a-z0-9-_ ]/gi, "").slice(0, 70) || "ebook-cover"}.${ext}`, { type: mime });
+            if (navigator.canShare({ files: [cover] })) {
+              await navigator.share({ title, text: `${text} ${url}`, url, files: [cover] });
+              return;
+            }
+          }
+        } catch (imageError) { if (imageError?.name === "AbortError") return; }
+      }
+      if (typeof navigator.share === "function") await navigator.share({ title, text, url });
+      else if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(`${title}\n${url}`); setShareMessage("Book title and link copied. Paste them into your app to share."); }
+      else window.prompt("Copy this book link to share:", url);
+    } catch (err) { if (err?.name !== "AbortError") setShareMessage("Could not open sharing. Copy the book link from your browser address bar."); }
+    finally { setSharing(false); }
+  }
 
   async function applyCoupon() {
     if (!user) return navigate("/login");
@@ -1379,6 +1414,8 @@ function Detail() {
           {book.category || "EBOOK"}
         </small>
         <h1>{book.title}</h1>
+        <div className="book-share-row"><button type="button" className="secondary book-share-button" onClick={handleShareBook} disabled={sharing}><span aria-hidden="true">↗</span> {sharing ? "Preparing share…" : "Share book"}</button><span>Share the title, cover and book link</span></div>
+        {shareMessage && <p role="status" className="book-share-message">{shareMessage}</p>}
         <p style={{ color: "#8b949e", marginBottom: "8px" }}>By {book.author || "MS Tech EBook"}</p>
         {book.publishedDate && <p style={{ color: "#8b949e", fontSize: "14px", marginBottom: "16px" }}>Published {new Date(book.publishedDate + "T00:00:00").toLocaleDateString()}</p>}
         <p style={{ whiteSpace: "pre-line" }}>{book.description}</p>
@@ -1409,6 +1446,31 @@ function Detail() {
       </div>
     </main>
   );
+}
+
+function PrivacyPolicy() {
+  return <main className="container policy-page"><span className="auth-kicker">CUSTOMER POLICY</span><h1>Privacy Policy</h1><p className="policy-updated">MS Tech EBook · Last updated 14 October 2026</p>
+    <section className="policy-card"><h2>1. Information we collect</h2><p>We may process your name, email address, protected account credentials, session information, purchase and order records, ebook library entitlements, coupon redemptions, and messages submitted to support.</p></section>
+    <section className="policy-card"><h2>2. How we use information</h2><p>We use information to secure accounts, provide ebooks, verify payments, prevent fraud and duplicate transactions, manage coupons, answer complaints, send account-related messages such as password-reset codes, and maintain service reliability.</p></section>
+    <section className="policy-card"><h2>3. Service providers</h2><p>Payments are processed through Razorpay. Ebook files may be delivered through Cloudflare R2, and application data may be stored in Firebase services. These providers process data under their own applicable terms and privacy practices. We do not intentionally store full payment-card credentials on our servers.</p></section>
+    <section className="policy-card"><h2>4. Security and retention</h2><p>We use measures intended to protect information, including access controls and protected sessions. No internet service can guarantee absolute security. We retain data as needed to operate the service, resolve disputes, prevent abuse, and meet legal obligations.</p></section>
+    <section className="policy-card"><h2>5. Cookies and session data</h2><p>Session cookies and similar technical storage help keep you signed in, protect authenticated actions, and operate the service. Disabling them may prevent login, checkout, or library access.</p></section>
+    <section className="policy-card"><h2>6. Your choices and contact</h2><p>You may contact us to request access to, correction of, or deletion of personal information, subject to applicable law and records we must retain.</p><p><a href="mailto:msinnovatex@gmail.com">msinnovatex@gmail.com</a></p></section>
+    <section className="policy-card"><h2>7. Updates</h2><p>We may update this policy as the service changes. The revised date on this page indicates the latest update.</p></section>
+    <p>Related: <Link to="/terms-of-service">Terms of Service</Link> · <Link to="/refund-policy">Refund Policy</Link></p></main>;
+}
+
+function TermsOfService() {
+  return <main className="container policy-page"><span className="auth-kicker">CUSTOMER POLICY</span><h1>Terms of Service</h1><p className="policy-updated">MS Tech EBook · Last updated 14 October 2026</p>
+    <section className="policy-card"><h2>1. Using the service</h2><p>By accessing MS Tech EBook, you agree to these terms and applicable law. If you do not agree, do not use the service. We may update these terms when the service or legal requirements change.</p></section>
+    <section className="policy-card"><h2>2. Accounts and security</h2><p>Provide accurate account information, keep your credentials private, and promptly report suspected unauthorized access. We may restrict accounts involved in fraud, abuse, or security risks.</p></section>
+    <section className="policy-card"><h2>3. Digital books and licences</h2><p>When you purchase or obtain a free ebook, you receive a personal, limited, non-exclusive, non-transferable licence to access it through the platform. Unless expressly authorized, do not resell, redistribute, publicly post, or commercially exploit ebook files.</p></section>
+    <section className="policy-card"><h2>4. Prices, coupons and payments</h2><p>Prices are displayed on the relevant book page and may change before an order is placed. Coupons are subject to their stated validity, discount, eligibility, and usage limits. Payments are processed through Razorpay. If you believe you have already been charged, check your library and contact support before retrying.</p></section>
+    <section className="policy-card"><h2>5. Refunds and access</h2><p>Digital purchases are generally non-refundable after the ebook is unlocked, except where required by law. If payment is captured but access is missing, or a duplicate charge occurs, contact support. See our <Link to="/refund-policy">Refund & Cancellation Policy</Link>.</p></section>
+    <section className="policy-card"><h2>6. Prohibited conduct</h2><p>Do not bypass access controls, interfere with the service, upload malicious content, abuse coupon or payment flows, impersonate others, or infringe intellectual-property or privacy rights.</p></section>
+    <section className="policy-card"><h2>7. Availability and limitations</h2><p>We aim to keep the service available but do not guarantee uninterrupted access or error-free operation. Features may change or be discontinued. Nothing in these terms excludes rights that cannot legally be excluded.</p></section>
+    <section className="policy-card"><h2>8. Contact and applicable law</h2><p>Contact <a href="mailto:msinnovatex@gmail.com">msinnovatex@gmail.com</a> or use the <Link to="/support">support page</Link>. Applicable laws in India apply, subject to mandatory legal rights.</p></section>
+    <p>Related: <Link to="/privacy-policy">Privacy Policy</Link> · <Link to="/refund-policy">Refund Policy</Link></p></main>;
 }
 
 function RefundPolicy() {
@@ -2011,6 +2073,8 @@ function App() {
           <Route path="/books" element={<Books />} />
           <Route path="/books/:id" element={<Detail />} />
           <Route path="/refund-policy" element={<RefundPolicy />} />
+          <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+          <Route path="/terms-of-service" element={<TermsOfService />} />
           <Route path="/support" element={<SupportComplaint />} />
           <Route path="/login" element={<AuthForm />} />
           <Route path="/register" element={<AuthForm register />} />
