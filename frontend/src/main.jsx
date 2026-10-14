@@ -1,9 +1,4 @@
 import React, { useEffect, useRef, useState, createContext, useContext } from "react";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
-import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
-
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
 const COVER_INPUT_MAX_BYTES = 5 * 1024 * 1024;
 const COVER_OUTPUT_MAX_BYTES = 350 * 1024;
 
@@ -408,6 +403,34 @@ export async function checkAuth(portal = activePortal()) {
   return res;
 }
 
+
+let razorpaySdkPromise = null;
+
+function loadRazorpaySdk() {
+  if (window.Razorpay) return Promise.resolve(window.Razorpay);
+  if (razorpaySdkPromise) return razorpaySdkPromise;
+
+  razorpaySdkPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true;
+    script.onload = () => {
+      if (window.Razorpay) resolve(window.Razorpay);
+      else {
+        razorpaySdkPromise = null;
+        script.remove();
+        reject(new Error("Razorpay could not initialize. Please try again."));
+      }
+    };
+    script.onerror = () => {
+      razorpaySdkPromise = null;
+      script.remove();
+      reject(new Error("Could not load Razorpay. Check your internet connection and try again."));
+    };
+    document.head.appendChild(script);
+  });
+  return razorpaySdkPromise;
+}
 
 // SEO metadata manager. This updates browser metadata on client-side navigation;
 // server-rendered/prerendered HTML is still needed for the strongest SEO results.
@@ -1291,9 +1314,7 @@ function Detail() {
         return;
       }
 
-      if (!window.Razorpay) {
-        throw new Error("Razorpay SDK is not loaded. Please verify your internet connection or ad blocker.");
-      }
+      await loadRazorpaySdk();
 
       const options = {
         key: orderData.key,
@@ -1697,6 +1718,12 @@ function Reader() {
         if (!response.ok) throw new Error(`Unable to load protected ebook (HTTP ${response.status}).`);
         const buffer = await response.arrayBuffer();
         if (!active) return;
+        // Load PDF.js only when a protected ebook is opened, keeping the initial storefront bundle smaller.
+        const [{ getDocument, GlobalWorkerOptions }, workerModule] = await Promise.all([
+          import("pdfjs-dist/legacy/build/pdf.mjs"),
+          import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url")
+        ]);
+        GlobalWorkerOptions.workerSrc = workerModule.default;
         loadingTask = getDocument({ data: buffer });
         const document = await loadingTask.promise;
         if (!active) {
