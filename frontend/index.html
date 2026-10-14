@@ -26,6 +26,32 @@
       name="twitter:description"
       content="Discover, buy, and read ebooks online with MS Tech EBook."
     />
+    <script id="ms-tech-ebook-website-schema" type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://mstech-ebook.store/#website",
+            "name": "MS Tech EBook",
+            "url": "https://mstech-ebook.store/",
+            "description": "Discover, buy, and read ebooks online with MS Tech EBook. Explore digital books across categories and access your library anytime.",
+            "publisher": { "@id": "https://mstech-ebook.store/#organization" }
+          },
+          {
+            "@type": "Organization",
+            "@id": "https://mstech-ebook.store/#organization",
+            "name": "MS Tech EBook",
+            "url": "https://mstech-ebook.store/",
+            "email": "msinnovatex@gmail.com",
+            "parentOrganization": {
+              "@type": "Organization",
+              "name": "MS InnovateX"
+            }
+          }
+        ]
+      }
+    </script>
     <title>MS Tech EBook | Buy and Read Ebooks Online</title>
   </head>
   <body>
