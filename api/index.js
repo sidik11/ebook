@@ -437,6 +437,68 @@ async function listBooks(activeOnly = true, limit = 100) {
   return result.slice(0, limit);
 }
 
+// Public catalogue cache: short TTL limits Firebase reads without making
+// admin changes appear stale for long. Never cache generated signed URLs.
+const PUBLIC_CATALOG_CACHE_TTL_MS = 30 * 1000;
+let publicCatalogCache = null;
+let publicCatalogLoad = null;
+let featuredBookIdsCache = null;
+let featuredBookIdsLoad = null;
+
+function invalidatePublicCatalogCache() {
+  publicCatalogCache = null;
+  publicCatalogLoad = null;
+  featuredBookIdsCache = null;
+  featuredBookIdsLoad = null;
+}
+
+async function getPublicCatalog() {
+  const timestamp = now();
+  if (publicCatalogCache && timestamp - publicCatalogCache.cachedAt < PUBLIC_CATALOG_CACHE_TTL_MS) {
+    return publicCatalogCache.books;
+  }
+  if (publicCatalogLoad) return publicCatalogLoad;
+
+  publicCatalogLoad = (async () => {
+    const books = await listBooks(true, 100);
+    publicCatalogCache = { cachedAt: now(), books };
+    return books;
+  })();
+
+  try {
+    return await publicCatalogLoad;
+  } finally {
+    publicCatalogLoad = null;
+  }
+}
+
+async function getFeaturedBookIds() {
+  const timestamp = now();
+  if (featuredBookIdsCache && timestamp - featuredBookIdsCache.cachedAt < PUBLIC_CATALOG_CACHE_TTL_MS) {
+    return featuredBookIdsCache.ids;
+  }
+  if (featuredBookIdsLoad) return featuredBookIdsLoad;
+
+  featuredBookIdsLoad = (async () => {
+    const stored = await get("settings/featuredBookIds");
+    const ids = Array.isArray(stored) ? stored.filter(id => typeof id === "string").slice(0, 6) : [];
+    featuredBookIdsCache = { cachedAt: now(), ids };
+    return ids;
+  })();
+
+  try {
+    return await featuredBookIdsLoad;
+  } finally {
+    featuredBookIdsLoad = null;
+  }
+}
+
+function setPublicCatalogCacheHeaders(res) {
+  // Browser revalidates; shared edge caches may reuse public data for 30s.
+  // Signed cover URLs live for 5 minutes, so this cache window is intentionally short.
+  res.set("Cache-Control", "public, max-age=0, s-maxage=30, stale-while-revalidate=60");
+}
+
 async function owned(userId, bookId) {
   return get("purchases/" + hash(userId + ":" + bookId));
 }
@@ -978,21 +1040,21 @@ router.get("/auth/me", async (req, res) => {
 
 router.get("/books", async (req, res) => {
   try {
-    res.set("Cache-Control", "no-store, max-age=0");
+    setPublicCatalogCacheHeaders(res);
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
-    const books = await listBooks(true, limit);
+    const books = (await getPublicCatalog()).slice(0, limit);
     const publicBooks = await Promise.all(books.map(b => publicBook(b.id, b.data)));
     res.json({ books: publicBooks });
   } catch (e) {
+    res.set("Cache-Control", "no-store, max-age=0");
     res.status(e.status || 500).json({ error: e.message || "Could not load ebooks" });
   }
 });
 
 router.get("/featured-books", async (req, res) => {
   try {
-    res.set("Cache-Control", "no-store, max-age=0");
-    const ids = await get("settings/featuredBookIds");
-    const selectedIds = Array.isArray(ids) ? ids.filter(id => typeof id === "string").slice(0, 6) : [];
+    setPublicCatalogCacheHeaders(res);
+    const selectedIds = await getFeaturedBookIds();
     const featured = [];
     for (const id of selectedIds) {
       const data = await get("books/" + key(id));
@@ -1002,6 +1064,7 @@ router.get("/featured-books", async (req, res) => {
     }
     res.json({ books: featured });
   } catch (e) {
+    res.set("Cache-Control", "no-store, max-age=0");
     res.status(e.status || 500).json({ error: e.message || "Could not load featured ebooks" });
   }
 });
@@ -1289,6 +1352,7 @@ router.patch("/admin/books/:id/review", async (req, res) => {
       return { ...current, ...(decision === "APPROVE" ? { category, publishedDate } : {}), status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: reviewTime, reviewedBy: auth.userId, reviewNote: note || null, updatedAt: reviewTime };
     });
     if (!reviewTx.committed) return res.status(409).json({ error: "This book is no longer pending review. Refresh the catalogue and check its current status." });
+    invalidatePublicCatalogCache();
     await audit(decision === "APPROVE" ? "BOOK_APPROVED" : "BOOK_REJECTED", auth, { bookId: id });
     res.json({ ok: true, status: decision === "APPROVE" ? "ACTIVE" : "REJECTED" });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : "Review action failed" }); }
@@ -1314,6 +1378,7 @@ router.post("/admin/books", async (req, res) => {
     const db = requireDb();
     const id = db.ref("books").push().key;
     await set("books/" + id, { ...book, publishedDate, status: "ACTIVE", createdAt: now(), updatedAt: now(), createdBy: auth.user.email });
+    invalidatePublicCatalogCache();
     await audit("BOOK_CREATED", auth, { bookId: id });
     res.status(201).json({ ok: true, id });
   } catch (e) {
@@ -1411,6 +1476,7 @@ router.put("/admin/featured-books", async (req, res) => {
       return res.status(400).json({ error: "Only published, active books can be featured. Refresh the list and try again." });
     }
     await set("settings/featuredBookIds", ids);
+    invalidatePublicCatalogCache();
     await audit("FEATURED_BOOKS_UPDATED", auth, { bookIds: ids });
     res.set("Cache-Control", "no-store").json({ ok: true, bookIds: ids });
   } catch (e) {
@@ -1812,6 +1878,7 @@ router.patch("/admin/books/:id", async (req, res) => {
     }
     if (!title || !type || !status || (type === "PAID" && (!Number.isFinite(price) || price <= 0 || price > MAX_BOOK_PRICE))) return res.status(400).json({ error: "Invalid book details" });
     await update(bookPath, changes);
+    invalidatePublicCatalogCache();
     if (oldCoverPath && oldCoverPath !== changes.coverPath) {
       try {
         if (existing.coverStorageProvider === "r2" || isR2Book(existing)) {
@@ -1859,6 +1926,7 @@ router.delete("/admin/books/:id", async (req, res) => {
       }
     }
     await remove(bookPath);
+    invalidatePublicCatalogCache();
     await audit("BOOK_DELETED", auth, { bookId: req.params.id });
     res.json({ ok: true });
   } catch (e) {
