@@ -1033,8 +1033,21 @@ router.get("/auth/me", async (req, res) => {
     const portal = requestPortal(req);
     const names = portalCookieNames(portal);
     const auth = await current(req, portal);
-    if (!auth) return res.status(401).json({ error: "Not logged in" });
+    // An unauthenticated visitor is a normal state for this session-check endpoint.
+    // Return a successful, explicit logged-out response so public pages and Lighthouse
+    // do not treat the expected absence of a session as a failed network request.
+    if (!auth) {
+      res.set("Cache-Control", "no-store");
+      return res.json({
+        authenticated: false,
+        user: null,
+        csrfToken: "",
+        portal
+      });
+    }
+    res.set("Cache-Control", "no-store");
     res.json({
+      authenticated: true,
       user: {
         id: auth.userId,
         name: auth.user.name,
