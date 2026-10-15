@@ -1,0 +1,9 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "displayName": "MS Tech EBook",
+    "identifier": "mstech-ebook.store",
+    "documentationUrl": "https://mstech-ebook.store/llms.txt"
+  },
+  "entries": []
+}
