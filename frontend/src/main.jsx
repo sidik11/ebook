@@ -616,7 +616,7 @@ function Grid({ books = [] }) {
 function FeaturedGridSkeleton() {
   return (
     <div className="grid featured-grid-skeleton" aria-label="Loading featured ebooks" aria-busy="true">
-      {Array.from({ length: 4 }, (_, index) => (
+      {Array.from({ length: 6 }, (_, index) => (
         <div className="card featured-skeleton-card" key={index}>
           <div className="cover featured-skeleton-cover" />
           <div className="featured-skeleton-line featured-skeleton-title" />
