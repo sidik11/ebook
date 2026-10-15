@@ -1711,7 +1711,7 @@ function ProtectedPdfPage({ pdfDoc, pageNumber, scale, totalPages, scrollRootRef
     const context = canvas.getContext("2d", { alpha: false });
     // Render at device pixel density while keeping CSS dimensions at the
     // intended zoom level. This prevents blurry text on high-DPI phones.
-    const outputScale = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+    const outputScale = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
     canvas.width = Math.ceil(viewport.width * outputScale);
     canvas.height = Math.ceil(viewport.height * outputScale);
     canvas.style.width = viewport.width + "px";
