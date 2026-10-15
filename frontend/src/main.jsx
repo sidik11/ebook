@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, createContext, useContext } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState, createContext, useContext } from "react";
 const COVER_INPUT_MAX_BYTES = 5 * 1024 * 1024;
 const COVER_OUTPUT_MAX_BYTES = 350 * 1024;
 
@@ -142,8 +142,9 @@ export async function compressCoverImage(file) {
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams, useLocation } from "react-router-dom";
 import "./styles.css";
-import AdminPanel from "./AdminPanel";
-import SAdmin, { SAdminLogin } from "./SAdmin";
+const AdminPanel = lazy(() => import("./AdminPanel"));
+const SAdmin = lazy(() => import("./SAdmin"));
+const SAdminLogin = lazy(() => import("./SAdmin").then(module => ({ default: module.SAdminLogin })));
 import {
   readCache, writeCache, readCover, writeCover, readReaderState, writeReaderState,
   getQueuedRefreshes, queueRefresh, removeQueuedRefresh
@@ -612,6 +613,21 @@ function Grid({ books = [] }) {
   );
 }
 
+function FeaturedGridSkeleton() {
+  return (
+    <div className="grid featured-grid-skeleton" aria-label="Loading featured ebooks" aria-busy="true">
+      {Array.from({ length: 4 }, (_, index) => (
+        <div className="card featured-skeleton-card" key={index}>
+          <div className="cover featured-skeleton-cover" />
+          <div className="featured-skeleton-line featured-skeleton-title" />
+          <div className="featured-skeleton-line featured-skeleton-meta" />
+          <div className="featured-skeleton-line featured-skeleton-price" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Home() {
   const { data, error, loading } = useCachedApi("featured-books", "/api/featured-books");
   const books = Array.isArray(data?.books) ? data.books : [];
@@ -626,7 +642,7 @@ function Home() {
       </div>
       <section>
         <h2>Featured Titles</h2>
-        {loading && <p style={{ color: "#8b949e" }}>Loading catalog...</p>}
+        {loading && <FeaturedGridSkeleton /> }
         {error && <p className="error">{error}</p>}
         {!loading && !error && (books.length ? <Grid books={books.slice(0, 6)} /> : <p style={{ color: "#8b949e" }}>Featured titles are being updated. Browse the full catalog to explore all ebooks.</p>)}
         <p style={{ marginTop: "18px" }}>Looking for your next read? <Link to="/books">Browse the full ebook catalog</Link> to explore available titles, authors, categories, and prices. For help with purchases or access, visit <Link to="/support">customer support</Link>.</p>
@@ -2070,6 +2086,7 @@ function App() {
     <AuthContext.Provider value={{ user: portalUser, setUser }}>
       <SeoManager />
       <Layout>
+        <Suspense fallback={<main className="center route-loading" aria-live="polite"><p>Loading page…</p></main>}>
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/books" element={<Books />} />
@@ -2090,6 +2107,7 @@ function App() {
           <Route path="/sadmin/*" element={portalUser?.role === "sadmin" ? <SAdmin /> : <SAdminLogin />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
       </Layout>
     </AuthContext.Provider>
   );
