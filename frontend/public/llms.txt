@@ -5,8 +5,8 @@ MS Tech EBook is an online digital bookstore where readers can discover ebook ti
 ## Main resources
 - [Home](https://mstech-ebook.store/): Browse the ebook storefront and featured titles.
 - [Sitemap](https://mstech-ebook.store/sitemap.xml): Discover public URLs published for search engines.
-- [Privacy Policy](https://mstech-ebook.store/privacy): Read the website privacy information, if available.
-- [Terms of Service](https://mstech-ebook.store/terms): Read the website terms, if available.
+- [Privacy Policy](https://mstech-ebook.store/privacy-policy): Read the website privacy policy.
+- [Terms of Service](https://mstech-ebook.store/terms-of-service): Read the website terms of service.
 
 ## Notes
 - Book availability, prices, and descriptions can change; use the live storefront for current information.
