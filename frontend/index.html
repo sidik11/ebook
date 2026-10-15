@@ -28,6 +28,27 @@
       name="twitter:description"
       content="Discover, buy, and read ebooks online with MS Tech EBook."
     />
+    <style>
+      *,*::before,*::after{box-sizing:border-box}
+      html{background:#070912}
+      body{margin:0;font-family:Inter,system-ui,sans-serif;background:radial-gradient(circle at 15% -10%,rgba(123,92,255,.18),transparent 32%),radial-gradient(circle at 90% 10%,rgba(192,108,255,.12),transparent 28%),#070912;color:#f4f6ff}
+      a{text-decoration:none;color:inherit}
+      header{height:72px;padding:0 6%;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(139,108,255,.18);background:rgba(8,11,20,.82);position:sticky;top:0;z-index:5}
+      .brand{font-weight:900;font-size:21px;color:#fff;letter-spacing:-.02em}
+      nav{display:flex;gap:18px;align-items:center}
+      button{font:inherit}
+      .hero{min-height:650px;padding:90px 6% 70px;display:grid;gap:55px;align-content:center}
+      .hero h1{font-size:clamp(42px,5vw,64px);font-weight:950;letter-spacing:-.055em;line-height:.98;max-width:800px;margin:12px 0}
+      .hero em{color:#aa99ff;font-style:normal}
+      .hero p{font-size:20px;color:#aeb5c8;max-width:650px}
+      .primary{display:inline-block;background:#7c5cff;color:white;border-radius:10px;padding:13px 19px;font-weight:800;border:0}
+      .container,.detail{max-width:1180px;margin:auto;padding:60px 6%}
+      .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:20px}
+      .card{min-width:0;border-radius:14px;overflow:hidden}
+      .cover{aspect-ratio:3/4;background:linear-gradient(145deg,#292354,#111727)}
+      .cover img{display:block;width:100%;height:100%;object-fit:cover}
+      @media(max-width:700px){.hero{min-height:0;padding-top:55px}.hero h1{font-size:42px}.detail{grid-template-columns:1fr}}
+    </style>
     <script id="ms-tech-ebook-website-schema" type="application/ld+json">
       {
         "@context": "https://schema.org",
