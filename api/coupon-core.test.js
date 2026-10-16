@@ -207,3 +207,60 @@ test("paid coupon reservation primes the same Firebase reference before transact
   assert.ok(prime >= 0 && transaction > prime, "read the current coupon before starting the reservation transaction");
   assert.match(route.slice(prime, transaction), /if \(!latestCoupon/);
 });
+
+
+test("free checkout does not overwrite an existing purchase in an unknown state", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const routeStart = apiSource.indexOf('router.post("/orders/create"');
+  const routeEnd = apiSource.indexOf("async function finalizePayment", routeStart);
+  const route = apiSource.slice(routeStart, routeEnd);
+  const guard = route.indexOf("if (current) return;");
+  const pending = route.indexOf('current?.status === "PENDING_COUPON"', route.indexOf("if (coupon && pricePaise === 0)"));
+  assert.ok(guard > pending, "existing non-paid purchase states must be preserved");
+});
+
+test("paid reservation canonicalizes legacy max-use and discount fields", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /current\.maxUses \?\? current\.max_uses \?\? current\.usageLimit/);
+  assert.match(apiSource, /current\.discountPercent \?\? current\.discount_percentage \?\? current\.percentage/);
+});
+
+test("coupon-limit payment finalization attempts a full refund and records the outcome", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /razorpay\.payments\.refund\(paymentId,\s*\{/);
+  assert.match(apiSource, /refundStatus.*REFUND_INITIATED/s);
+  assert.match(apiSource, /refundInitiated: Boolean\(finalization\.refundInitiated\)/);
+});
+
+test("paid coupon reservation retries one transient abort after refreshing active coupon data", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /const reserveCoupon = \(\) => couponRef\.transaction/);
+  assert.match(apiSource, /const retrySnapshot = await couponRef\.once\("value"\)/);
+  assert.match(apiSource, /couponStatus\(retryCoupon\) === "ACTIVE" && !couponExpiryIsPast\(retryCoupon\)/);
+});
+
+
+test("paid checkout refuses to reserve a coupon after its discount changes", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /const appliedDiscountPercent = couponPercent\(coupon\)/);
+  assert.match(apiSource, /couponPercent\(effective\) !== appliedDiscountPercent/);
+});
+
+
+test("coupon-limit refund has an atomic claim to avoid duplicate gateway refunds", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /const refundClaim = await db\.ref\(eventPath\)\.transaction\(current => current \|\| reviewEvent\)/);
+  assert.match(apiSource, /if \(!refundClaim\.committed\)/);
+});

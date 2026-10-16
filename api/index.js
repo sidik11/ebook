@@ -2454,18 +2454,22 @@ router.post("/orders/create", async (req, res) => {
         return res.status(400).json({ error: "This coupon is inactive or expired. Please apply it again." });
       }
       coupon = latestCoupon;
-      const couponTx = await couponRef.transaction(current => {
+      // The order amount is already calculated. Do not reserve a coupon whose
+      // discount changed between validation and reservation.
+      const appliedDiscountPercent = couponPercent(coupon);
+      const reserveCoupon = () => couponRef.transaction(current => {
         if (!current || couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current)) return;
         const effective = {
           ...coupon,
           ...current,
-          discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? current.discount ?? coupon.discountPercent,
-          maxUses: current.maxUses ?? coupon.maxUses,
-          usedCount: current.usedCount ?? coupon.usedCount ?? 0,
+          discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? current.discount ?? coupon.discountPercent ?? coupon.discount_percentage ?? coupon.percentage ?? coupon.discount,
+          maxUses: current.maxUses ?? current.max_uses ?? current.usageLimit ?? current.usage_limit ?? current.maxRedemptions ?? current.totalUses ?? coupon.maxUses ?? coupon.max_uses ?? coupon.usageLimit ?? coupon.usage_limit ?? coupon.maxRedemptions ?? coupon.totalUses,
+          usedCount: current.usedCount ?? current.usesCount ?? current.redeemedCount ?? coupon.usedCount ?? coupon.usesCount ?? coupon.redeemedCount ?? 0,
           status: current.status ?? coupon.status ?? "ACTIVE",
-          expiresAt: current.expiresAt ?? coupon.expiresAt ?? null
+          expiresAt: current.expiresAt ?? current.expiry ?? current.expires_at ?? coupon.expiresAt ?? coupon.expiry ?? coupon.expires_at ?? null
         };
         if (couponStatus(effective) !== "ACTIVE" || couponExpiryIsPast(effective)) return;
+        if (couponPercent(effective) !== appliedDiscountPercent) return;
         const reservations = { ...(effective.reservations || {}) };
         const currentTime = now();
         let ownReservation = null;
@@ -2484,7 +2488,13 @@ router.post("/orders/create", async (req, res) => {
         const activeOtherReservations = couponLiveReservations({ ...effective, reservations }, currentTime, auth.userId);
         const recordedUses = couponRecordedUses(effective);
         const maxUses = Number(effective.maxUses || 0);
-        if (!ownReservation && (!Number.isInteger(maxUses) || maxUses < 1 || recordedUses + activeOtherReservations >= maxUses)) return;
+        if (!Number.isSafeInteger(maxUses) || maxUses < 1 || recordedUses + activeOtherReservations >= maxUses) {
+          if (ownReservation) {
+            reservations[reservationKey] = ownReservation;
+            return { ...effective, reservations };
+          }
+          return;
+        }
         reservations[reservationKey] = {
           userId: auth.userId,
           bookId,
@@ -2492,6 +2502,18 @@ router.post("/orders/create", async (req, res) => {
         };
         return { ...effective, reservations };
       });
+      let couponTx = await reserveCoupon();
+      if (!couponTx.committed) {
+        // A cold Firebase transaction cache or a concurrent write can abort the
+        // first attempt. Re-read the authoritative record and retry once only
+        // while the coupon still exists and is active; never recreate deleted coupons.
+        const retrySnapshot = await couponRef.once("value");
+        const retryCoupon = retrySnapshot.val();
+        if (retryCoupon && couponStatus(retryCoupon) === "ACTIVE" && !couponExpiryIsPast(retryCoupon)) {
+          coupon = retryCoupon;
+          couponTx = await reserveCoupon();
+        }
+      }
       if (!couponTx.committed) {
         // Distinguish a truly exhausted coupon from a concurrent request that
         // already created this user's reservation for the same book.
@@ -2504,7 +2526,7 @@ router.post("/orders/create", async (req, res) => {
             couponReservationExpiryMs(entry) > now();
         });
         if (!sameUserReservation) {
-          const maxUses = Number(latest.maxUses || coupon?.maxUses || 0);
+          const maxUses = Number(latest.maxUses ?? latest.max_uses ?? latest.usageLimit ?? latest.usage_limit ?? latest.maxRedemptions ?? latest.totalUses ?? coupon?.maxUses ?? coupon?.max_uses ?? coupon?.usageLimit ?? coupon?.usage_limit ?? coupon?.maxRedemptions ?? coupon?.totalUses ?? 0);
           const recordedUses = couponRecordedUses(latest);
           const activeReservations = couponLiveReservations(latest, now(), auth.userId);
           if (recordedUses >= maxUses) {
@@ -2546,6 +2568,9 @@ router.post("/orders/create", async (req, res) => {
         if (current?.status === "PENDING_COUPON" &&
             current.userId === auth.userId && current.bookId === bookId &&
             current.couponCode === couponCode) return current;
+        // Never overwrite an existing purchase in an unknown/intermediate state.
+        // Doing so could replace another order or discard a payment record.
+        if (current) return;
         return {
           userId: auth.userId, bookId, orderId: proposedOrderId, paymentId: "",
           amount: 0, amountPaise: 0, status: "PENDING_COUPON",
@@ -2684,7 +2709,11 @@ async function finalizePayment(paymentId, orderId) {
   const priorEvent = await get(eventPath);
   if (priorEvent?.status === "PROCESSED") return { alreadyProcessed: true };
   if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
-  if (priorEvent?.status === "COUPON_LIMIT_REVIEW") return { alreadyProcessed: true, couponLimitExceeded: true };
+  if (priorEvent?.status === "COUPON_LIMIT_REVIEW") return {
+    alreadyProcessed: true,
+    couponLimitExceeded: true,
+    refundInitiated: priorEvent.refundStatus === "REFUND_INITIATED"
+  };
 
   // Convert the checkout reservation into a coupon redemption before granting
   // access. If another checkout consumed the final slot after this reservation
@@ -2715,22 +2744,53 @@ async function finalizePayment(paymentId, orderId) {
     const latestCoupon = couponTx.snapshot?.val() || {};
     const priorRedemption = (latestCoupon.redemptions || {})[userKey];
     if (!couponTx.committed && priorRedemption?.bookId !== order.bookId) {
+      // Claim the refund attempt atomically. Browser verification and the
+      // Razorpay webhook can arrive together; only one may call the refund API.
+      // If the call times out, leave the claim for manual reconciliation rather
+      // than risking a duplicate refund on a retry.
       const reviewEvent = {
         status: "COUPON_LIMIT_REVIEW",
         orderId, userId: order.userId, bookId: order.bookId,
-        paymentId, processedAt: now(), refundStatus: "REVIEW_REQUIRED",
+        paymentId, processedAt: now(), refundStatus: "REFUND_REQUESTED",
         reason: "Coupon reservation expired or usage limit was consumed before payment finalization."
       };
+      const refundClaim = await db.ref(eventPath).transaction(current => current || reviewEvent);
+      if (!refundClaim.committed) {
+        const claimedEvent = refundClaim.snapshot?.val() || {};
+        return {
+          alreadyProcessed: true,
+          couponLimitExceeded: true,
+          refundInitiated: claimedEvent.refundStatus === "REFUND_INITIATED"
+        };
+      }
       await db.ref().update({
         ["orders/" + orderId + "/status"]: "COUPON_LIMIT_REVIEW",
         ["orders/" + orderId + "/paymentId"]: paymentId,
         ["orders/" + orderId + "/updatedAt"]: now(),
-        ["orders/" + orderId + "/refundStatus"]: "REVIEW_REQUIRED",
-        ["paymentEvents/" + paymentId]: reviewEvent,
+        ["orders/" + orderId + "/refundStatus"]: "REFUND_REQUESTED",
         ["checkoutLocks/" + hash(order.userId + ":" + order.bookId) + "/status"]: "COUPON_LIMIT_REVIEW",
         ["checkoutLocks/" + hash(order.userId + ":" + order.bookId) + "/updatedAt"]: now()
       });
-      return { alreadyProcessed: false, couponLimitExceeded: true };
+      let refundInitiated = false;
+      try {
+        const refund = await razorpay.payments.refund(paymentId, {
+          amount: Number(payment.amount),
+          notes: { reason: "coupon_limit_exceeded", orderId }
+        });
+        refundInitiated = Boolean(refund?.id);
+        if (refundInitiated) {
+          await db.ref().update({
+            ["orders/" + orderId + "/refundStatus"]: "REFUND_INITIATED",
+            ["orders/" + orderId + "/refundId"]: refund.id,
+            ["orders/" + orderId + "/updatedAt"]: now(),
+            ["paymentEvents/" + paymentId + "/refundStatus"]: "REFUND_INITIATED",
+            ["paymentEvents/" + paymentId + "/refundId"]: refund.id
+          });
+        }
+      } catch (refundError) {
+        console.error("Coupon-limit refund could not be initiated; manual review is required:", refundError.message);
+      }
+      return { alreadyProcessed: false, couponLimitExceeded: true, refundInitiated };
     }
   }
 
@@ -2818,8 +2878,11 @@ router.post("/orders/verify", async (req, res) => {
       ok: true,
       duplicateCaptured: Boolean(finalization.duplicateCaptured),
       couponLimitExceeded: Boolean(finalization.couponLimitExceeded),
+      refundInitiated: Boolean(finalization.refundInitiated),
       message: finalization.couponLimitExceeded
-        ? "Payment was captured, but the coupon usage limit could not be honored. This order is flagged for refund review; ebook access has not been granted."
+        ? (finalization.refundInitiated
+          ? "Payment was captured, but the coupon limit was reached. A full refund has been initiated; ebook access has not been granted."
+          : "Payment was captured, but the coupon limit was reached. Refund review is required; ebook access has not been granted.")
         : finalization.duplicateCaptured
           ? "This payment was captured but another payment already unlocked the book. The extra charge has been flagged for refund review."
           : "Payment verified successfully."
