@@ -2606,8 +2606,10 @@ async function finalizePayment(paymentId, orderId) {
   if (order.couponCode) {
     const code = normalizeCouponCode(order.couponCode);
     const userKey = hash(order.userId);
+    const configuredCoupon = await get("coupons/" + code);
     const couponTx = await db.ref("coupons/" + code).transaction(current =>
       claimPaidCouponRedemption(current, {
+        configuredCoupon,
         userId: order.userId,
         userKey,
         bookId: order.bookId,
