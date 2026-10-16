@@ -2760,7 +2760,7 @@ async function finalizePayment(paymentId, orderId) {
   const purchasePath = "purchases/" + purchaseId;
   const eventPath = "paymentEvents/" + paymentId;
   const priorEvent = await get(eventPath);
-  if (priorEvent?.status === "PROCESSED") return { alreadyProcessed: true };
+  if (priorEvent?.status === "PROCESSED" && order.couponAccountingStatus !== "RETRY_REQUIRED") return { alreadyProcessed: true };
   if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
 
   // The purchase record is the single atomic entitlement gate. Only one
@@ -2815,31 +2815,39 @@ async function finalizePayment(paymentId, orderId) {
     const code = normalizeCouponCode(order.couponCode);
     try {
       const usePath = "couponUses/" + code + "/" + hash(order.userId);
-      const useTx = await db.ref(usePath).transaction(current => {
-        if (current) return;
-        return {
-          userId: order.userId, bookId: order.bookId, orderId,
-          discount: Number(order.discount || 0),
-          originalAmount: Number(order.originalAmount || order.amount),
-          paidAmount: Number(order.amount || 0), usedAt: now()
-        };
+      const useTx = await db.ref(usePath).transaction(current => current || {
+        userId: order.userId, bookId: order.bookId, orderId,
+        discount: Number(order.discount || 0),
+        originalAmount: Number(order.originalAmount || order.amount),
+        paidAmount: Number(order.amount || 0), usedAt: now()
       });
-      if (useTx.committed) {
-        await db.ref("coupons/" + code).transaction(current => {
-          if (!current) return;
-          const reservations = { ...(current.reservations || {}) };
-          const userKey = hash(order.userId);
-          for (const [reservationId, entry] of Object.entries(reservations)) {
-            const owner = couponReservationOwner(entry);
-            if (owner === order.userId || owner === userKey ||
-                (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
-              delete reservations[reservationId];
-            }
-          }
-          return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
-        });
+      const useRecord = useTx.snapshot?.val();
+      if (!useRecord || useRecord.userId !== order.userId ||
+          useRecord.bookId !== order.bookId || useRecord.orderId !== orderId) {
+        throw new Error("Coupon-use ledger conflicts with the captured order.");
       }
-      await db.ref("orders/" + orderId).update({ couponAccountingStatus: "COMPLETE", couponAccountingUpdatedAt: now() });
+
+      // Reconcile the aggregate counter from the per-user ledger rather than
+      // blindly incrementing it. This makes retries safe if a previous attempt
+      // wrote couponUses but failed before updating coupons.usedCount.
+      const allUses = await get("couponUses/" + code);
+      const ledgerCount = allUses && typeof allUses === "object" ? Object.keys(allUses).length : 0;
+      const couponTx = await db.ref("coupons/" + code).transaction(current => {
+        if (!current) return;
+        const reservations = { ...(current.reservations || {}) };
+        const userKey = hash(order.userId);
+        for (const [reservationId, entry] of Object.entries(reservations)) {
+          const owner = couponReservationOwner(entry);
+          if (owner === order.userId || owner === userKey ||
+              (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
+            delete reservations[reservationId];
+          }
+        }
+        const reconciledUsedCount = couponRecordedUses(current, ledgerCount);
+        return { ...current, usedCount: reconciledUsedCount, reservations };
+      });
+      if (!couponTx.committed) throw new Error("Coupon record is missing; accounting remains pending.");
+      await db.ref("orders/" + orderId).update({ couponAccountingStatus: "COMPLETE", couponAccountingUpdatedAt: now(), couponAccountingError: null });
     } catch (couponAccountingError) {
       console.error("Captured payment recorded but coupon accounting needs reconciliation", {
         orderId, paymentId, code, error: safeText(couponAccountingError?.message, 240)
