@@ -238,7 +238,7 @@
   "crons": [
     {
       "path": "/api/cron/expire-orders",
-      "schedule": "* * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
