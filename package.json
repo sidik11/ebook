@@ -6,8 +6,8 @@
     "dev:frontend": "npm run dev --prefix frontend",
     "dev:api": "npm run dev --prefix api",
     "start": "npm start --prefix api",
-    "test": "npm test --prefix api",
-    "build": "npm test --prefix api && npm run build --prefix frontend",
+    "test": "node --check api/index.js && node --check api/coupon-core.js && npm test --prefix api",
+    "build": "npm test && npm run build --prefix frontend",
     "install-all": "npm install --prefix frontend && npm install --prefix api"
   }
 }
