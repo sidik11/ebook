@@ -2785,7 +2785,7 @@ async function finalizePayment(paymentId, orderId) {
     status: duplicateCaptured ? "DUPLICATE_CAPTURED" : "PROCESSED",
     orderId, userId: order.userId, bookId: order.bookId, processedAt: now(),
     amount: Number(order.amount || 0), amountPaise: Number(order.amountPaise || 0),
-    currency: safeText(payment.currency || "INR", 8), paymentMethod, capturedAt,
+    currency: safeText(payment.currency || "INR", 8), paymentMethod: paymentMethod, capturedAt,
     refundStatus: duplicateCaptured ? "REVIEW_REQUIRED" : "NOT_REQUIRED",
     ...(duplicateCaptured ? { duplicateOfPaymentId: currentPurchase.paymentId } : {})
   };
