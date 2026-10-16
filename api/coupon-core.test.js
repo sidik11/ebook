@@ -170,3 +170,21 @@ test("admin payment ledger exposes coupon discount, payment method, and captured
   assert.match(endpoint, /paymentMethod: safeText\(order\.paymentMethod/);
   assert.match(endpoint, /paymentCapturedAt: Number\(order\.paymentCapturedAt/);
 });
+
+
+test("coupon validation and checkout enforce usage from the per-user redemption ledger", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const validateStart = source.indexOf('router.post("/coupons/validate"');
+  const validateEnd = source.indexOf('router.post("/coupons/redeem-free"', validateStart);
+  const validateRoute = source.slice(validateStart, validateEnd);
+  assert.match(validateRoute, /get\("couponUses\/" \+ code\)/);
+  assert.match(validateRoute, /couponRecordedUses\(canonical, ledgerUseCount\)/);
+
+  const createStart = source.indexOf('router.post("/orders/create"');
+  const createEnd = source.indexOf("async function finalizePayment", createStart);
+  const createRoute = source.slice(createStart, createEnd);
+  assert.match(createRoute, /get\("couponUses\/" \+ couponCode\)/);
+  assert.match(createRoute, /couponRecordedUses\(effective, couponLedgerUseCount\)/);
+});
