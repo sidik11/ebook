@@ -2064,6 +2064,109 @@ router.get("/admin/orders", async (req, res) => {
   }
 });
 
+router.get("/admin/checkout-locks", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth) return;
+    const db = requireDb();
+    const [locksSnap, ordersSnap] = await Promise.all([
+      db.ref("checkoutLocks").once("value"),
+      db.ref("orders").once("value")
+    ]);
+    const ordersById = new Map();
+    ordersSnap.forEach(child => ordersById.set(String(child.key), child.val()));
+    const rows = [];
+    locksSnap.forEach(child => {
+      const lock = child.val();
+      if (!lock || typeof lock !== "object") return;
+      const orderId = String(lock.orderId || "");
+      const order = orderId ? (ordersById.get(orderId) || null) : null;
+      const createdAt = Number(order?.createdAt || lock.createdAt || 0);
+      const expiresAt = Number(lock.expiresAt || 0);
+      const ageMs = createdAt > 0 ? Math.max(0, now() - createdAt) : 0;
+      const isUnpaid = !["PAID", "CAPTURED"].includes(String(order?.status || lock.status || "").toUpperCase()) &&
+        !order?.paymentId && !order?.razorpayPaymentId && !order?.paymentCapturedAt && !order?.paidAt;
+      rows.push({
+        lockKey: child.key, orderId, userId: lock.userId || order?.userId || order?.uid || "",
+        bookId: lock.bookId || order?.bookId || order?.book || "",
+        status: String(order?.status || lock.status || "UNKNOWN").toUpperCase(),
+        lockStatus: String(lock.status || "UNKNOWN").toUpperCase(),
+        createdAt, expiresAt, ageMs, expired: expiresAt > 0 && expiresAt <= now(),
+        recoverable: isUnpaid && ageMs >= 2 * 60 * 1000 && expiresAt <= now() && lock.status !== "PAID",
+        hasOrder: Boolean(order), hasPaymentData: Boolean(order?.paymentId || order?.razorpayPaymentId || order?.paymentCapturedAt || order?.paidAt)
+      });
+    });
+    rows.sort((x, y) => Number(y.ageMs || 0) - Number(x.ageMs || 0));
+    res.set("Cache-Control", "no-store, max-age=0").json({ locks: rows, now: now() });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not load checkout locks." });
+  }
+});
+
+router.post("/admin/checkout-locks/:lockKey/recover", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const lockKey = String(req.params.lockKey || "").trim();
+    if (!lockKey || lockKey.length > 180 || /[.#$\[\]/]/.test(lockKey)) {
+      return res.status(400).json({ error: "Invalid checkout lock key." });
+    }
+    const db = requireDb();
+    const lockRef = db.ref("checkoutLocks/" + lockKey);
+    const lockSnap = await lockRef.once("value");
+    const lock = lockSnap.val();
+    if (!lock) return res.status(404).json({ error: "Checkout lock not found. Refresh the list." });
+    if (String(lock.status || "").toUpperCase() === "PAID") {
+      return res.status(409).json({ error: "This checkout lock is marked PAID and cannot be removed here." });
+    }
+    const expiresAt = Number(lock.expiresAt || 0);
+    const createdAt = Number(lock.createdAt || 0);
+    if (!expiresAt || expiresAt > now() || !createdAt || now() - createdAt < 2 * 60 * 1000) {
+      return res.status(409).json({ error: "This lock is not yet safely expired. Wait at least two minutes and refresh." });
+    }
+
+    const orderId = String(lock.orderId || "");
+    let order = null;
+    if (orderId) {
+      order = await get("orders/" + key(orderId));
+      if (order?.paymentId || order?.razorpayPaymentId || order?.paymentCapturedAt || order?.paidAt ||
+          ["PAID", "CAPTURED"].includes(String(order?.status || "").toUpperCase())) {
+        return res.status(409).json({ error: "Payment data exists. Do not delete this lock; reconcile the payment first." });
+      }
+      let providerOrder;
+      try {
+        providerOrder = await getRazorpay().orders.fetch(String(order?.razorpayOrderId || orderId));
+      } catch (providerError) {
+        return res.status(409).json({ error: "Could not verify the Razorpay order. Lock retained for safety; try again later." });
+      }
+      if (!providerOrder || String(providerOrder.status || "").toLowerCase() === "paid") {
+        return res.status(409).json({ error: "Razorpay reports this order may be paid. Lock retained for reconciliation." });
+      }
+      if (order && ["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) {
+        const tx = await db.ref("orders/" + key(orderId)).transaction(current => {
+          if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+          if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+          if (now() - Number(current.createdAt || 0) < 2 * 60 * 1000) return;
+          return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "ADMIN_RECOVERED_EXPIRED_CHECKOUT", updatedAt: now() };
+        });
+        if (!tx.committed) return res.status(409).json({ error: "Order status changed during recovery. Refresh and reconcile it." });
+      }
+    }
+
+    const removed = await lockRef.transaction(current => {
+      if (!current || current.status === "PAID" || Number(current.expiresAt || 0) > now() ||
+          now() - Number(current.createdAt || 0) < 2 * 60 * 1000 ||
+          (orderId && String(current.orderId || "") !== orderId)) return;
+      return null;
+    });
+    if (!removed.committed) return res.status(409).json({ error: "Lock changed during recovery. Refresh the list and try again." });
+    await audit("CHECKOUT_LOCK_RECOVERED", auth, { lockKey, orderId, previousStatus: order?.status || lock.status || "UNKNOWN" });
+    res.set("Cache-Control", "no-store, max-age=0").json({ ok: true, lockKey, orderId, status: order ? "CANCELLED" : "LOCK_REMOVED" });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not recover checkout lock." });
+  }
+});
+
 router.patch("/admin/orders/:id/terminate", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
