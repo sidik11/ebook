@@ -64,3 +64,27 @@ test("active reservations count against the final available use", () => {
   };
   assert.equal(claim(reserved, "user-a", "book-a"), undefined);
 });
+
+
+test("discount helper rejects invalid prices and unsupported percentages", () => {
+  assert.equal(discountPaise({ discountPercent: 50 }, 0), 0);
+  assert.equal(discountPaise({ discountPercent: 50 }, -100), 0);
+  assert.equal(discountPaise({ discountPercent: 101 }, 7900), 0);
+  assert.equal(discountPaise({ discountPercent: 50 }, 7900), 3950);
+});
+
+test("discount helper rounds fractional paise deterministically and never exceeds price", () => {
+  assert.equal(discountPaise({ discountPercent: 5 }, 101), 5);
+  assert.equal(discountPaise({ discountPercent: 99 }, 101), 100);
+  assert.equal(discountPaise({ discountPercent: 100 }, 101), 101);
+});
+
+test("expired reservations do not block the final coupon use", () => {
+  const coupon = {
+    ...base(), maxUses: 1,
+    reservations: { old: { userId: "user-b", bookId: "book-b", expiresAt: 1_700_000_000_000 } }
+  };
+  const next = claim(coupon, "user-a", "book-a");
+  assert.ok(next);
+  assert.equal(next.usedCount, 1);
+});
