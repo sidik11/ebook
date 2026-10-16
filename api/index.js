@@ -2638,8 +2638,15 @@ async function finalizePayment(paymentId, orderId) {
     if (useTx.committed) {
       await db.ref("coupons/" + code).transaction(current => {
         if (!current) return;
-        const reservations = current.reservations || {};
-        delete reservations[hash(order.userId + ":" + order.bookId)];
+        const reservations = { ...(current.reservations || {}) };
+        const userKey = hash(order.userId);
+        for (const [reservationId, entry] of Object.entries(reservations)) {
+          const owner = couponReservationOwner(entry);
+          if (owner === order.userId || owner === userKey ||
+              (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
+            delete reservations[reservationId];
+          }
+        }
         return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
       });
     }
