@@ -193,3 +193,17 @@ test("zero-value order checkout uses the shared free-redemption transaction", ()
   assert.match(freeCheckout, /claimFreeCouponRedemption\(current/);
   assert.doesNotMatch(freeCheckout, /usedCount\s*:\s*Number/);
 });
+
+test("paid coupon reservation primes the same Firebase reference before transaction", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const routeStart = apiSource.indexOf('router.post("/orders/create"');
+  const routeEnd = apiSource.indexOf("async function finalizePayment", routeStart);
+  const route = apiSource.slice(routeStart, routeEnd);
+  const prime = route.indexOf('await couponRef.once("value")');
+  const transaction = route.indexOf("couponRef.transaction(current =>");
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.ok(prime >= 0 && transaction > prime, "read the current coupon before starting the reservation transaction");
+  assert.match(route.slice(prime, transaction), /if \(!latestCoupon/);
+});
