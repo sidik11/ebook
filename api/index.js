@@ -2667,18 +2667,24 @@ async function finalizePayment(paymentId, orderId) {
   if (order.couponCode) {
     const code = normalizeCouponCode(order.couponCode);
     const userKey = hash(order.userId);
-    const configuredCoupon = await get("coupons/" + code);
-    const couponTx = await db.ref("coupons/" + code).transaction(current =>
-      claimPaidCouponRedemption(current, {
-        configuredCoupon,
-        userId: order.userId,
-        userKey,
-        bookId: order.bookId,
-        orderId,
-        timestamp: now(),
-        hash
-      })
-    );
+    const couponRef = db.ref("coupons/" + code);
+    // Prime the RTDB reference before its transaction updater runs. The helper
+    // itself fails closed on null, deleted, expired, or mismatched coupon data.
+    const couponSnapshot = await couponRef.once("value");
+    const currentCoupon = couponSnapshot.val();
+    const couponTx = currentCoupon
+      ? await couponRef.transaction(current =>
+          claimPaidCouponRedemption(current, {
+            userId: order.userId,
+            userKey,
+            bookId: order.bookId,
+            orderId,
+            couponCode: code,
+            timestamp: now(),
+            hash
+          })
+        )
+      : { committed: false, snapshot: couponSnapshot };
     const latestCoupon = couponTx.snapshot?.val() || {};
     const priorRedemption = (latestCoupon.redemptions || {})[userKey];
     if (!couponTx.committed && priorRedemption?.bookId !== order.bookId) {
