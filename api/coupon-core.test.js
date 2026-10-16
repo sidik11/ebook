@@ -95,7 +95,7 @@ test("paid coupon finalization atomically converts its reservation to one redemp
     [hash("user-a")]: { userId: "user-a", bookId: "book-a", expiresAt: 1_900_000_000_000 }
   }};
   const next = claimPaidCouponRedemption(partial, {
-    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
     timestamp: 1_800_000_000_000, hash
   });
   assert.equal(next.usedCount, 1);
@@ -109,7 +109,7 @@ test("paid coupon cannot exceed maxUses after its reservation expires and anothe
     reservations: {}
   };
   assert.equal(claimPaidCouponRedemption(partial, {
-    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
     timestamp: 1_800_000_000_000, hash
   }), undefined);
 });
@@ -119,17 +119,46 @@ test("paid coupon finalization retry is idempotent for the same user and book", 
     [hash("user-a")]: { userId: "user-a", bookId: "book-a", expiresAt: 1_900_000_000_000 }
   }};
   const first = claimPaidCouponRedemption(partial, {
-    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
     timestamp: 1_800_000_000_000, hash
   });
   const retry = claimPaidCouponRedemption(first, {
-    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
     timestamp: 1_800_000_000_100, hash
   });
   assert.equal(retry.usedCount, 1);
   assert.equal(Object.keys(retry.redemptions).length, 1);
 });
 
+
+test("paid coupon rejects missing, deleted, expired, invalid-expiry, and mismatched records", () => {
+  const args = {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_000, hash
+  };
+  assert.equal(claimPaidCouponRedemption(null, { ...args }), undefined);
+  assert.equal(claimPaidCouponRedemption(undefined, { ...args }), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), status: "DELETED", discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), expiresAt: 1_700_000_000_000, discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), expiresAt: "not-a-date", discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), code: "OTHERCOUPON1", discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), discountPercent: 100 }, args), undefined);
+});
+
+test("paid coupon refuses invalid max-use limits and does not overrun live reservations", () => {
+  const args = {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_000, hash
+  };
+  assert.equal(claimPaidCouponRedemption({ ...base(), discountPercent: 25, maxUses: 0 }, args), undefined);
+  const reserved = {
+    ...base(), discountPercent: 25, maxUses: 1,
+    reservations: { other: { userId: "user-b", bookId: "book-b", expiresAt: 1_900_000_000_000 } }
+  };
+  assert.equal(claimPaidCouponRedemption(reserved, args), undefined);
+});
 
 test("API imports the paid coupon helper used by payment finalization", () => {
   const fs = require("node:fs");
