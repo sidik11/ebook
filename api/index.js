@@ -2108,7 +2108,7 @@ router.post("/admin/checkout-locks/:lockKey/recover", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
     const lockKey = String(req.params.lockKey || "").trim();
-    if (!lockKey || lockKey.length > 180 || /[.#$\\[\\]/]/.test(lockKey)) {
+    if (!lockKey || lockKey.length > 180 || [".", "#", "$", "[", "]", "/"].some(char => lockKey.includes(char))) {
       return res.status(400).json({ error: "Invalid checkout lock key." });
     }
 
