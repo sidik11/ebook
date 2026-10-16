@@ -125,22 +125,26 @@ function claimFreeCouponRedemption(current, {
  * overrun the coupon limit.
  */
 function claimPaidCouponRedemption(current, {
-  userId, userKey, bookId, orderId, timestamp, hash
+  configuredCoupon, userId, userKey, bookId, orderId, timestamp, hash
 }) {
-  if (!current || typeof current !== "object") return;
-  const percent = couponPercent(current);
+  // Use the previously read coupon as a provisional base when RTDB invokes
+  // the updater with its initial local null snapshot. The server's current
+  // record wins on transaction retries.
+  const source = current && typeof current === "object" ? current : configuredCoupon;
+  if (!source || typeof source !== "object") return;
+  const percent = couponPercent(source);
   if (percent < 5 || percent >= 100) return;
 
-  const maxUses = Number(current.maxUses ?? current.max_uses ?? current.usageLimit ?? current.usage_limit ?? 0);
+  const maxUses = Number(source.maxUses ?? source.max_uses ?? source.usageLimit ?? source.usage_limit ?? 0);
   if (!Number.isInteger(maxUses) || maxUses < 1) return;
 
-  const redemptions = { ...(current.redemptions || {}) };
+  const redemptions = { ...(source.redemptions || {}) };
   const previous = redemptions[userKey] || redemptions[userId];
   if (previous) {
     return previous.bookId === bookId ? current : undefined;
   }
 
-  const reservations = { ...(current.reservations || {}) };
+  const reservations = { ...(source.reservations || {}) };
   let ownActiveReservation = false;
   for (const reservationKey of Object.keys(reservations)) {
     const entry = reservations[reservationKey] || {};
@@ -155,12 +159,12 @@ function claimPaidCouponRedemption(current, {
     }
   }
 
-  const used = recordedUses(current);
-  const held = liveReservations({ ...current, redemptions, reservations }, timestamp, userId, hash);
+  const used = recordedUses(source);
+  const held = liveReservations({ ...source, redemptions, reservations }, timestamp, userId, hash);
   if (used + held >= maxUses) return;
 
   redemptions[userKey] = { userId, bookId, orderId, redeemedAt: timestamp };
-  return { ...current, usedCount: used + 1, redemptions, reservations };
+  return { ...source, usedCount: used + 1, redemptions, reservations };
 }
 
 module.exports = { claimFreeCouponRedemption, claimPaidCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
