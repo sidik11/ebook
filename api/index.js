@@ -2597,6 +2597,46 @@ async function finalizePayment(paymentId, orderId) {
   const priorEvent = await get(eventPath);
   if (priorEvent?.status === "PROCESSED") return { alreadyProcessed: true };
   if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
+  if (priorEvent?.status === "COUPON_LIMIT_REVIEW") return { alreadyProcessed: true, couponLimitExceeded: true };
+
+  // Convert the checkout reservation into a coupon redemption before granting
+  // access. If another checkout consumed the final slot after this reservation
+  // expired, preserve the captured-payment record and flag it for refund review
+  // instead of silently granting a discount beyond maxUses.
+  if (order.couponCode) {
+    const code = normalizeCouponCode(order.couponCode);
+    const userKey = hash(order.userId);
+    const couponTx = await db.ref("coupons/" + code).transaction(current =>
+      claimPaidCouponRedemption(current, {
+        userId: order.userId,
+        userKey,
+        bookId: order.bookId,
+        orderId,
+        timestamp: now(),
+        hash
+      })
+    );
+    const latestCoupon = couponTx.snapshot?.val() || {};
+    const priorRedemption = (latestCoupon.redemptions || {})[userKey];
+    if (!couponTx.committed && priorRedemption?.bookId !== order.bookId) {
+      const reviewEvent = {
+        status: "COUPON_LIMIT_REVIEW",
+        orderId, userId: order.userId, bookId: order.bookId,
+        paymentId, processedAt: now(), refundStatus: "REVIEW_REQUIRED",
+        reason: "Coupon reservation expired or usage limit was consumed before payment finalization."
+      };
+      await db.ref().update({
+        ["orders/" + orderId + "/status"]: "COUPON_LIMIT_REVIEW",
+        ["orders/" + orderId + "/paymentId"]: paymentId,
+        ["orders/" + orderId + "/updatedAt"]: now(),
+        ["orders/" + orderId + "/refundStatus"]: "REVIEW_REQUIRED",
+        ["paymentEvents/" + paymentId]: reviewEvent,
+        ["checkoutLocks/" + hash(order.userId + ":" + order.bookId) + "/status"]: "COUPON_LIMIT_REVIEW",
+        ["checkoutLocks/" + hash(order.userId + ":" + order.bookId) + "/updatedAt"]: now()
+      });
+      return { alreadyProcessed: false, couponLimitExceeded: true };
+    }
+  }
 
   // The purchase record is the single atomic entitlement gate. Only one
   // captured payment can claim it; parallel webhook/browser callbacks cannot
@@ -2631,25 +2671,27 @@ async function finalizePayment(paymentId, orderId) {
   if (!duplicateCaptured && order.couponCode) {
     const code = normalizeCouponCode(order.couponCode);
     const usePath = "couponUses/" + code + "/" + hash(order.userId);
-    const useTx = await db.ref(usePath).transaction(current => {
-      if (current) return;
-      return { userId: order.userId, bookId: order.bookId, orderId, discount: Number(order.discount || 0), originalAmount: Number(order.originalAmount || order.amount), paidAmount: Number(order.amount || 0), usedAt: now() };
+    await db.ref(usePath).transaction(current => current || {
+      userId: order.userId, bookId: order.bookId, orderId,
+      discount: Number(order.discount || 0),
+      originalAmount: Number(order.originalAmount || order.amount),
+      paidAmount: Number(order.amount || 0), usedAt: now()
     });
-    if (useTx.committed) {
-      await db.ref("coupons/" + code).transaction(current => {
-        if (!current) return;
-        const reservations = { ...(current.reservations || {}) };
-        const userKey = hash(order.userId);
-        for (const [reservationId, entry] of Object.entries(reservations)) {
-          const owner = couponReservationOwner(entry);
-          if (owner === order.userId || owner === userKey ||
-              (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
-            delete reservations[reservationId];
-          }
+    // Usage was atomically counted in claimPaidCouponRedemption above. Only
+    // remove any stale reservation here; never increment usedCount twice.
+    await db.ref("coupons/" + code).transaction(current => {
+      if (!current) return;
+      const reservations = { ...(current.reservations || {}) };
+      const userKey = hash(order.userId);
+      for (const [reservationId, entry] of Object.entries(reservations)) {
+        const owner = couponReservationOwner(entry);
+        if (owner === order.userId || owner === userKey ||
+            (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
+          delete reservations[reservationId];
         }
-        return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
-      });
-    }
+      }
+      return { ...current, reservations };
+    });
   } else if (order.couponCode) {
     await db.ref("coupons/" + normalizeCouponCode(order.couponCode) + "/reservations/" + hash(order.userId)).remove();
   }
@@ -2679,9 +2721,12 @@ router.post("/orders/verify", async (req, res) => {
     res.json({
       ok: true,
       duplicateCaptured: Boolean(finalization.duplicateCaptured),
-      message: finalization.duplicateCaptured
-        ? "This payment was captured but another payment already unlocked the book. The extra charge has been flagged for refund review."
-        : "Payment verified successfully."
+      couponLimitExceeded: Boolean(finalization.couponLimitExceeded),
+      message: finalization.couponLimitExceeded
+        ? "Payment was captured, but the coupon usage limit could not be honored. This order is flagged for refund review; ebook access has not been granted."
+        : finalization.duplicateCaptured
+          ? "This payment was captured but another payment already unlocked the book. The extra charge has been flagged for refund review."
+          : "Payment verified successfully."
     });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Payment verification failed" });
