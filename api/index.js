@@ -2760,7 +2760,7 @@ async function finalizePayment(paymentId, orderId) {
   const purchasePath = "purchases/" + purchaseId;
   const eventPath = "paymentEvents/" + paymentId;
   const priorEvent = await get(eventPath);
-  if (priorEvent?.status === "PROCESSED" && order.couponAccountingStatus !== "RETRY_REQUIRED") return { alreadyProcessed: true };
+  if (priorEvent?.status === "PROCESSED" && (!order.couponCode || ["COMPLETE", "NOT_REQUIRED"].includes(String(order.couponAccountingStatus || "").toUpperCase()))) return { alreadyProcessed: true };
   if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
 
   // The purchase record is the single atomic entitlement gate. Only one
