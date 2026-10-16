@@ -1403,6 +1403,10 @@ function Detail() {
                 ...response
               })
             });
+            if (verified.couponLimitExceeded) {
+              navigate(`/support?category=PAYMENT_ISSUE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(response.razorpay_order_id)}&paymentId=${encodeURIComponent(response.razorpay_payment_id)}&reason=coupon-limit-review`);
+              return;
+            }
             if (verified.duplicateCaptured) {
               navigate(`/support?category=DUPLICATE_CHARGE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(response.razorpay_order_id)}&paymentId=${encodeURIComponent(response.razorpay_payment_id)}`);
               return;
