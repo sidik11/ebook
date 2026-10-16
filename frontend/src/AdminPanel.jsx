@@ -290,7 +290,7 @@ function AdminPanel() {
         method: "POST",
         body: JSON.stringify({})
       });
-      showNotice("success", result.deleted ? "Verified unpaid order deleted from Firebase; checkout lock and coupon reservation cleared." : "Expired checkout lock removed. No matching order record needed deletion.");
+      showNotice("success", result.orphanLock ? "Orphan checkout lock removed; expired coupon reservations cleared." : result.deleted ? "Verified unpaid order deleted from Firebase; checkout lock and coupon reservation cleared." : "Expired checkout lock removed. No matching order record needed deletion.");
       await Promise.all([loadCheckoutLocks(), loadOrders(), loadAnalytics()]);
     } catch (err) {
       showNotice("error", err.message || "Could not recover checkout lock. Refresh and check payment status.");
