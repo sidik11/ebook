@@ -7,6 +7,14 @@ function normalizeStatus(value) {
   return String(value || "ACTIVE").trim().toUpperCase();
 }
 
+function discountPaise(coupon, pricePaise) {
+  const price = Number(pricePaise);
+  const percent = couponPercent(coupon);
+  if (!Number.isSafeInteger(price) || price <= 0 || !percent) return 0;
+  if (percent === 100) return price;
+  return Math.min(Math.floor((price * percent + 50) / 100), price);
+}
+
 function couponPercent(coupon) {
   const raw = coupon?.discountPercent ?? coupon?.discount_percentage ?? coupon?.percentage ?? coupon?.discount;
   const normalized = typeof raw === "string" ? raw.trim().replace(/%$/, "").trim() : raw;
@@ -109,4 +117,4 @@ function claimFreeCouponRedemption(current, {
   return { ...effective, usedCount: used + 1, redemptions, reservations };
 }
 
-module.exports = { claimFreeCouponRedemption, couponPercent, timestampMs, expiryMs };
+module.exports = { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
