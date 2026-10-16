@@ -87,6 +87,7 @@ function AdminPanel() {
     [books]
   );
   const [orders, setOrders] = useState([]);
+  const [orderBusyId, setOrderBusyId] = useState("");
   const [coupons, setCoupons] = useState([]);
   const [featuredBookIds, setFeaturedBookIds] = useState([]);
   const [featuredBusy, setFeaturedBusy] = useState(false);
@@ -262,6 +263,29 @@ function AdminPanel() {
       setOrders(Array.isArray(data.orders) ? data.orders : []);
     } catch {
       setOrders([]);
+    }
+  };
+
+  const terminatePendingOrder = async order => {
+    const status = String(order.status || "").trim().toUpperCase();
+    if (!["CREATED", "PENDING"].includes(status)) {
+      showNotice("error", "Only created or pending orders can be terminated.");
+      return;
+    }
+    if (!window.confirm("Terminate this unpaid order? Paid/finalized orders cannot be terminated, and this action cannot be undone.")) return;
+    setOrderBusyId(order.id);
+    try {
+      await api("/api/admin/orders/" + encodeURIComponent(order.id) + "/terminate", {
+        method: "PATCH",
+        body: JSON.stringify({})
+      });
+      showNotice("success", "Pending order terminated.");
+      await Promise.all([loadOrders(), loadAnalytics()]);
+    } catch (err) {
+      showNotice("error", err.message || "Could not terminate this order. Refresh and try again.");
+      await loadOrders();
+    } finally {
+      setOrderBusyId("");
     }
   };
 
@@ -1098,7 +1122,7 @@ function AdminPanel() {
                 <div className="admin-data-table-wrap">
                   <table className="admin-data-table admin-payment-table">
                     <thead>
-                      <tr><th>Order ID</th><th>Payment ID</th><th>Customer</th><th>Book</th><th>Amount / discount</th><th>Method</th><th>Status</th><th>Date</th></tr>
+                      <tr><th>Order ID</th><th>Payment ID</th><th>Customer</th><th>Book</th><th>Amount / discount</th><th>Method</th><th>Status</th><th>Date</th><th>Action</th></tr>
                     </thead>
                     <tbody>
                       {orders.map(order => (
@@ -1119,6 +1143,18 @@ function AdminPanel() {
                           </td>
                           <td><b className={"admin-table-pill " + (String(order.status || "").toUpperCase() === "PAID" ? "good" : "neutral")}>{order.status || "—"}</b>{order.refundStatus && <small style={{display:"block"}}>{order.refundStatus.replaceAll("_"," ")}</small>}</td>
                           <td><span>{formatDate(order.paymentCapturedAt || order.createdAt)}</span></td>
+                          <td>
+                            {["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase()) && !order.paymentId && !order.paymentCapturedAt ? (
+                              <button
+                                className="admin-user-action block"
+                                disabled={orderBusyId === order.id}
+                                onClick={() => terminatePendingOrder(order)}
+                                title="Terminate this unpaid pending order"
+                              >
+                                {orderBusyId === order.id ? "Terminating…" : "Terminate"}
+                              </button>
+                            ) : <span>—</span>}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
