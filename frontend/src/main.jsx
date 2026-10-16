@@ -1415,6 +1415,23 @@ function Detail() {
       };
 
       const rzp = new window.Razorpay(options);
+      // If the customer dismisses Razorpay, schedule a best-effort cancellation
+      // while this page remains open. Server-side cancellation still verifies
+      // payment state and enforces the two-minute minimum.
+      rzp.on("modal.ondismiss", () => {
+        window.setTimeout(async () => {
+          try {
+            await api("/api/orders/abandon", {
+              method: "POST",
+              body: JSON.stringify({ orderId: orderData.order_id, bookId: id })
+            });
+          } catch (abandonError) {
+            // A payment may still be processing or the browser may have gone
+            // offline; the next checkout attempt also performs stale-lock recovery.
+            console.warn("Abandoned checkout cleanup deferred:", abandonError.message);
+          }
+        }, 2 * 60 * 1000);
+      });
       rzp.on("payment.failed", resp => {
         const metadata = resp.error?.metadata || {};
         navigate(`/support?category=PAYMENT_ISSUE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(metadata.order_id || orderData.order_id)}&paymentId=${encodeURIComponent(metadata.payment_id || "")}`);
