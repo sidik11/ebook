@@ -115,3 +115,14 @@ test("coupon reservation 503 includes safe diagnostic reason and logs transactio
   assert.match(apiSource, /coupon_missing_in_transaction/);
   assert.match(apiSource, /usage_limit_or_reservation_capacity/);
 });
+
+
+test("reservation transaction uses the pre-read coupon for one null local snapshot only", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /let usedProvisionalCoupon = false/);
+  assert.match(apiSource, /if \(!usedProvisionalCoupon && coupon && typeof coupon === "object"\)/);
+  assert.match(apiSource, /usedProvisionalCoupon = true/);
+  assert.match(apiSource, /reservationAbortReason = "coupon_missing_in_transaction"/);
+});

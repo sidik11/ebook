@@ -2445,9 +2445,21 @@ router.post("/orders/create", async (req, res) => {
       }
       coupon = latestCoupon;
       let reservationAbortReason = "not_attempted";
+      let usedProvisionalCoupon = false;
       const reserveCoupon = () => couponRef.transaction(current => {
         reservationAbortReason = "unknown";
-        if (!current) { reservationAbortReason = "coupon_missing_in_transaction"; return; }
+        // The Admin SDK may first invoke this updater with a null local value
+        // despite the preceding once("value") read. Use that read only as a
+        // provisional first attempt; if the server retry is also null, abort.
+        if (!current) {
+          if (!usedProvisionalCoupon && coupon && typeof coupon === "object") {
+            usedProvisionalCoupon = true;
+            current = coupon;
+          } else {
+            reservationAbortReason = "coupon_missing_in_transaction";
+            return;
+          }
+        }
         if (couponStatus(current) !== "ACTIVE") { reservationAbortReason = "coupon_inactive"; return; }
         if (couponExpiryIsPast(current)) { reservationAbortReason = "coupon_expired"; return; }
         const effective = {
