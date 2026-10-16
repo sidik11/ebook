@@ -619,6 +619,55 @@ app.use((req, res, next) => {
 // Router for all API routes (mounted at /api and / to support all deployment styles)
 const router = express.Router();
 
+// Extra abuse controls for high-impact routes. Existing auth, setup, reset,
+// and complaint endpoints keep their own specifically tuned limits.
+const ROUTES_WITH_OWN_RATE_LIMIT = new Set([
+  "POST /auth/register",
+  "POST /setup/admin",
+  "POST /auth/login",
+  "POST /auth/forgot-password",
+  "POST /auth/reset-password",
+  "POST /support/complaints"
+]);
+
+function routeRateLimitPolicy(req) {
+  const method = String(req.method || "GET").toUpperCase();
+  const path = String(req.path || "");
+  if (method === "POST" && path === "/auth/logout") return { bucket: "logout", limit: 30 };
+  if (method === "POST" && path === "/auth/change-password") return { bucket: "change-password", limit: 5 };
+  if (method === "POST" && path === "/orders/create") return { bucket: "checkout", limit: 10 };
+  if (method === "POST" && path === "/orders/verify") return { bucket: "payment-verify", limit: 20 };
+  if (method === "POST" && path === "/coupons/validate") return { bucket: "coupon-validate", limit: 30 };
+  if (method === "POST" && path === "/coupons/redeem-free") return { bucket: "coupon-redeem", limit: 10 };
+  if (method === "POST" && (path === "/admin/upload-url" || path === "/sadmin/upload-url")) return { bucket: "upload-url", limit: 20 };
+  if (method === "GET" && (path === "/admin/upload-status" || path === "/sadmin/upload-status")) return { bucket: "upload-status", limit: 60 };
+  if (method === "GET" && /^\\/books\\/[^/]+\\/secure-url$/.test(path)) return { bucket: "secure-url", limit: 30 };
+  if (method === "POST" && /^\\/admin\\/complaints\\/[^/]+\\/refund$/.test(path)) return { bucket: "refund", limit: 5 };
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && path.startsWith("/admin/")) return { bucket: "admin-write", limit: 120 };
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && path.startsWith("/sadmin/")) return { bucket: "sadmin-write", limit: 90 };
+  if (method === "GET" && path.startsWith("/admin/")) return { bucket: "admin-read", limit: 240 };
+  if (method === "GET" && path.startsWith("/sadmin/")) return { bucket: "sadmin-read", limit: 180 };
+  if (method === "GET" && (path === "/books" || path === "/featured-books" || /^\\/books\\/[^/]+$/.test(path))) return { bucket: "catalog-read", limit: 300 };
+  if (method === "GET" && path === "/library") return { bucket: "library-read", limit: 60 };
+  return null;
+}
+
+router.use(async (req, res, next) => {
+  const method = String(req.method || "GET").toUpperCase();
+  const path = String(req.path || "");
+  if (ROUTES_WITH_OWN_RATE_LIMIT.has(method + " " + path)) return next();
+  const policy = routeRateLimitPolicy(req);
+  if (!policy) return next();
+  try {
+    await enforceRateLimit(req, policy.bucket, policy.limit);
+    return next();
+  } catch (e) {
+    return res.status(e.status || 500).json({
+      error: e.status === 429 ? "Too many requests. Please try again later." : "Request could not be rate-limited safely."
+    });
+  }
+});
+
 router.get("/health", (req, res) => {
   const ready = Boolean(getFirebase());
   res.json({
@@ -832,9 +881,23 @@ router.post("/auth/login", async (req, res) => {
     if (portal === "sadmin" && user.role !== "sadmin") return res.status(403).json({ error: "Sub-admin credentials required." });
     if (portal === "user" && ["admin", "sadmin"].includes(user.role)) return res.status(403).json({ error: "Use the correct staff portal to sign in." });
 
-    const firstLogin = ["admin", "sadmin"].includes(user.role) && user.mustChangePassword === true;
-    if (user.role === "admin" && !firstLogin && process.env.ADMIN_TOTP_SECRET) {
-      if (!verifyTotp(String(process.env.ADMIN_TOTP_SECRET), String(otp || ""))) {
+    if (user.role === "admin") {
+      const totpSecret = String(process.env.ADMIN_TOTP_SECRET || "").trim();
+      let secretBytes;
+      try {
+        secretBytes = totpSecret ? base32Decode(totpSecret) : Buffer.alloc(0);
+      } catch {
+        secretBytes = Buffer.alloc(0);
+      }
+      // Fail closed: admin sessions must never be issued without a strong,
+      // correctly configured TOTP secret, including on the first login.
+      if (secretBytes.length < 20) {
+        return res.status(503).json({
+          error: "Administrator MFA is not configured correctly. Contact the site owner.",
+          code: "ADMIN_MFA_NOT_CONFIGURED"
+        });
+      }
+      if (!verifyTotp(totpSecret, String(otp || ""))) {
         return res.status(401).json({ error: "Admin verification code required", code: "ADMIN_OTP_REQUIRED" });
       }
     }
