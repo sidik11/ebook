@@ -137,3 +137,31 @@ test("stale Razorpay order recovery checks coupon and discounted amount before r
   assert.match(source, /status: "SUPERSEDED"/);
   assert.match(source, /if \(order\.status === "SUPERSEDED"\)/);
 });
+
+
+test("captured payment ledger is persisted before coupon bookkeeping", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const start = apiSource.indexOf("async function finalizePayment");
+  const end = apiSource.indexOf('router.post("/orders/verify"', start);
+  const finalize = apiSource.slice(start, end);
+  const ledgerWrite = finalize.indexOf("await db.ref().update(updates)");
+  const couponAccounting = finalize.indexOf('const usePath = "couponUses/"');
+  assert.ok(ledgerWrite >= 0 && couponAccounting > ledgerWrite);
+  assert.match(finalize, /couponAccountingStatus: "RETRY_REQUIRED"/);
+  assert.match(finalize, /paymentMethod: paymentMethod/);
+});
+
+test("admin payment ledger exposes coupon discount, payment method, and captured time", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const start = apiSource.indexOf('router.get("/admin/orders"');
+  const end = apiSource.indexOf('router.patch("/admin/books/:id"', start);
+  const endpoint = apiSource.slice(start, end);
+  assert.match(endpoint, /originalAmount: Number\\(order\\.originalAmount/);
+  assert.match(endpoint, /couponCode: safeText\\(order\\.couponCode/);
+  assert.match(endpoint, /paymentMethod: safeText\\(order\\.paymentMethod/);
+  assert.match(endpoint, /paymentCapturedAt: Number\\(order\\.paymentCapturedAt/);
+});

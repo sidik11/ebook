@@ -1914,10 +1914,18 @@ router.get("/admin/orders", async (req, res) => {
         bookTitle: safeText(book?.title, MAX_BOOK_TITLE),
         amount: Number(order.amount || 0),
         amountPaise: Number(order.amountPaise || 0),
+        originalAmount: Number(order.originalAmount ?? order.amount ?? 0),
+        discount: Number(order.discount || 0),
+        couponCode: safeText(order.couponCode, 24),
+        paymentMethod: safeText(order.paymentMethod || (order.status === "PAID" && !order.paymentId ? "COUPON" : ""), 30),
+        currency: safeText(order.currency || "INR", 8),
+        couponAccountingStatus: safeText(order.couponAccountingStatus || (order.couponCode ? "PENDING" : "NOT_REQUIRED"), 30),
+        refundStatus: safeText(order.refundStatus, 30),
         status: safeText(order.status, 30),
         razorpayOrderId: safeText(order.razorpayOrderId || order.id, 100),
         paymentId: safeText(order.paymentId, 100),
         createdAt: Number(order.createdAt || 0),
+        paymentCapturedAt: Number(order.paymentCapturedAt || 0),
         updatedAt: Number(order.updatedAt || 0),
       });
     }
@@ -2708,50 +2716,80 @@ async function finalizePayment(paymentId, orderId) {
   // If a second distinct captured payment reached the gateway, preserve the
   // original entitlement and mark the extra charge for explicit refund review.
   const status = duplicateCaptured ? "DUPLICATE_CAPTURED" : "PAID";
+  const capturedAt = Number(payment.created_at || 0) > 0 ? Number(payment.created_at) * 1000 : now();
+  const paymentMethod = order.paymentMethod === "COUPON" ? "COUPON" : safeText(payment.method || "unknown", 30);
   const event = {
     status: duplicateCaptured ? "DUPLICATE_CAPTURED" : "PROCESSED",
     orderId, userId: order.userId, bookId: order.bookId, processedAt: now(),
+    amount: Number(order.amount || 0), amountPaise: Number(order.amountPaise || 0),
+    currency: safeText(payment.currency || "INR", 8), paymentMethod, capturedAt,
     refundStatus: duplicateCaptured ? "REVIEW_REQUIRED" : "NOT_REQUIRED",
     ...(duplicateCaptured ? { duplicateOfPaymentId: currentPurchase.paymentId } : {})
   };
   const updates = {
     ["orders/" + orderId + "/status"]: status,
     ["orders/" + orderId + "/paymentId"]: paymentId,
+    ["orders/" + orderId + "/paymentMethod"]: paymentMethod,
+    ["orders/" + orderId + "/paymentCapturedAt"]: capturedAt,
+    ["orders/" + orderId + "/currency"]: safeText(payment.currency || "INR", 8),
+    ["orders/" + orderId + "/couponAccountingStatus"]: order.couponCode && !duplicateCaptured ? "PENDING" : "NOT_REQUIRED",
     ["orders/" + orderId + "/updatedAt"]: now(),
     [eventPath]: event,
     ["checkoutLocks/" + purchaseId + "/status"]: "PAID",
     ["checkoutLocks/" + purchaseId + "/updatedAt"]: now()
   };
-  if (!duplicateCaptured && order.couponCode) {
-    const code = normalizeCouponCode(order.couponCode);
-    const usePath = "couponUses/" + code + "/" + hash(order.userId);
-    const useTx = await db.ref(usePath).transaction(current => {
-      if (current) return;
-      return { userId: order.userId, bookId: order.bookId, orderId, discount: Number(order.discount || 0), originalAmount: Number(order.originalAmount || order.amount), paidAmount: Number(order.amount || 0), usedAt: now() };
-    });
-    if (useTx.committed) {
-      await db.ref("coupons/" + code).transaction(current => {
-        if (!current) return;
-        const reservations = { ...(current.reservations || {}) };
-        const userKey = hash(order.userId);
-        for (const [reservationId, entry] of Object.entries(reservations)) {
-          const owner = couponReservationOwner(entry);
-          if (owner === order.userId || owner === userKey ||
-              (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
-            delete reservations[reservationId];
-          }
-        }
-        return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
-      });
-    }
-  } else if (order.couponCode) {
-    await db.ref("coupons/" + normalizeCouponCode(order.couponCode) + "/reservations/" + hash(order.userId)).remove();
-  }
   if (duplicateCaptured) {
     updates["orders/" + orderId + "/refundStatus"] = "REVIEW_REQUIRED";
     updates["orders/" + orderId + "/duplicateOfPaymentId"] = currentPurchase.paymentId;
   }
+
+  // Persist the captured payment and ledger entry before coupon bookkeeping.
+  // Coupon accounting is secondary: a Firebase coupon transaction failure must
+  // never hide a successful Razorpay capture from the admin payment ledger.
   await db.ref().update(updates);
+
+  if (!duplicateCaptured && order.couponCode) {
+    const code = normalizeCouponCode(order.couponCode);
+    try {
+      const usePath = "couponUses/" + code + "/" + hash(order.userId);
+      const useTx = await db.ref(usePath).transaction(current => {
+        if (current) return;
+        return {
+          userId: order.userId, bookId: order.bookId, orderId,
+          discount: Number(order.discount || 0),
+          originalAmount: Number(order.originalAmount || order.amount),
+          paidAmount: Number(order.amount || 0), usedAt: now()
+        };
+      });
+      if (useTx.committed) {
+        await db.ref("coupons/" + code).transaction(current => {
+          if (!current) return;
+          const reservations = { ...(current.reservations || {}) };
+          const userKey = hash(order.userId);
+          for (const [reservationId, entry] of Object.entries(reservations)) {
+            const owner = couponReservationOwner(entry);
+            if (owner === order.userId || owner === userKey ||
+                (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
+              delete reservations[reservationId];
+            }
+          }
+          return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
+        });
+      }
+      await db.ref("orders/" + orderId).update({ couponAccountingStatus: "COMPLETE", couponAccountingUpdatedAt: now() });
+    } catch (couponAccountingError) {
+      console.error("Captured payment recorded but coupon accounting needs reconciliation", {
+        orderId, paymentId, code, error: safeText(couponAccountingError?.message, 240)
+      });
+      await db.ref("orders/" + orderId).update({
+        couponAccountingStatus: "RETRY_REQUIRED",
+        couponAccountingError: safeText(couponAccountingError?.message || "Coupon accounting failed", 240),
+        couponAccountingUpdatedAt: now()
+      }).catch(() => {});
+    }
+  } else if (order.couponCode) {
+    await db.ref("coupons/" + normalizeCouponCode(order.couponCode) + "/reservations/" + hash(order.userId)).remove().catch(() => {});
+  }
   return { alreadyProcessed: !purchaseTx.committed && !duplicateCaptured, duplicateCaptured };
 }
 

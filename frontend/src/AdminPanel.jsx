@@ -1093,12 +1093,12 @@ function AdminPanel() {
         {view === "orders" && (
           <section className="admin-page-grid">
             <div className="admin-card">
-              <SectionHeading eyebrow="PAYMENT LEDGER" title={"All payment details · " + orders.length} subtitle={"Successful revenue: " + formatMoney(analyticsOverview.totalBuyAmount) + " · Average paid order: " + formatMoney(analyticsOverview.averageOrderValue)} />
+              <SectionHeading eyebrow="PAYMENT LEDGER" title={"All payment details · " + orders.length} subtitle={"Successful revenue: " + formatMoney(analyticsOverview.totalBuyAmount) + " · Average paid order: " + formatMoney(analyticsOverview.averageOrderValue)} action={<button className="admin-secondary" onClick={() => Promise.all([loadOrders(), loadAnalytics()])}><RefreshCw size={15} /> Refresh payments</button>} />
               {orders.length ? (
                 <div className="admin-data-table-wrap">
                   <table className="admin-data-table admin-payment-table">
                     <thead>
-                      <tr><th>Order ID</th><th>Payment ID</th><th>Customer</th><th>Book</th><th>Amount</th><th>Status</th><th>Date</th></tr>
+                      <tr><th>Order ID</th><th>Payment ID</th><th>Customer</th><th>Book</th><th>Amount / discount</th><th>Method</th><th>Status</th><th>Date</th></tr>
                     </thead>
                     <tbody>
                       {orders.map(order => (
@@ -1107,9 +1107,18 @@ function AdminPanel() {
                           <td><span>{order.paymentId || "—"}</span></td>
                           <td><span>{order.userEmail || "—"}</span></td>
                           <td><span>{order.bookTitle || order.bookId || "—"}</span></td>
-                          <td><strong>{formatMoney(order.amount)}</strong></td>
-                          <td><b className={"admin-table-pill " + (String(order.status || "").toUpperCase() === "PAID" ? "good" : "neutral")}>{order.status || "—"}</b></td>
-                          <td><span>{formatDate(order.createdAt)}</span></td>
+                          <td>
+                            <strong>{formatMoney(order.amount)}</strong>
+                            {Number(order.discount || 0) > 0 && <small style={{display:"block",color:"var(--muted,#888)"}}>Saved {formatMoney(order.discount)} · List {formatMoney(order.originalAmount)}</small>}
+                            {order.couponCode && <small style={{display:"block",color:"var(--muted,#888)"}}>Coupon {order.couponCode}</small>}
+                          </td>
+                          <td>
+                            <span>{order.paymentMethod || (order.status === "PAID" && !order.paymentId ? "COUPON" : "—")}</span>
+                            {order.paymentId && <small style={{display:"block",color:"var(--muted,#888)"}}>{order.currency || "INR"}</small>}
+                            {order.couponAccountingStatus === "RETRY_REQUIRED" && <small style={{display:"block",color:"#b45309"}}>Coupon ledger needs review</small>}
+                          </td>
+                          <td><b className={"admin-table-pill " + (String(order.status || "").toUpperCase() === "PAID" ? "good" : "neutral")}>{order.status || "—"}</b>{order.refundStatus && <small style={{display:"block"}}>{order.refundStatus.replaceAll("_"," ")}</small>}</td>
+                          <td><span>{formatDate(order.paymentCapturedAt || order.createdAt)}</span></td>
                         </tr>
                       ))}
                     </tbody>
