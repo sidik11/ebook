@@ -790,3 +790,84 @@ header .brand-subtitle{font-size:10px;font-weight:500;letter-spacing:.035em;line
 .route-loading p{color:var(--muted,#8994aa)}
 @keyframes featured-skeleton-shimmer{to{background-position-x:-220%}}
 @media(prefers-reduced-motion:reduce){.featured-skeleton-cover{animation:none}}
+
+
+/* Restore the reference storefront layout on phones; also force a fresh Vite CSS asset. */
+@media (max-width: 700px) {
+  header {
+    height: auto !important;
+    min-height: 0;
+    padding: 16px 30px !important;
+    align-items: flex-start !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+  }
+  header .brand-lockup {
+    align-items: flex-start !important;
+    white-space: normal;
+  }
+  header nav {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    gap: clamp(10px, 3vw, 20px) !important;
+  }
+  header nav a,
+  header nav button {
+    flex: 0 0 auto;
+    font-size: 13px !important;
+    padding: 8px 10px !important;
+    white-space: nowrap;
+  }
+  .hero {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    align-items: start;
+    gap: 35px !important;
+    min-height: 0 !important;
+    padding: 55px 30px 28px !important;
+  }
+  .hero > div:first-child {
+    max-width: none !important;
+  }
+  .hero > div:first-child > small {
+    display: inline-flex;
+    margin-bottom: 16px;
+  }
+  .hero h1 {
+    max-width: 100%;
+    font-size: clamp(38px, 8vw, 54px) !important;
+    line-height: .99 !important;
+    letter-spacing: -.055em;
+    overflow-wrap: normal;
+  }
+  .hero p {
+    max-width: 100%;
+    font-size: clamp(18px, 3.5vw, 22px) !important;
+    line-height: 1.6 !important;
+  }
+  .hero section {
+    min-width: 0;
+    padding: 20px 16px !important;
+    border: 1px solid rgba(58, 68, 96, .8) !important;
+    border-radius: 22px !important;
+    background: linear-gradient(145deg, rgba(17, 24, 39, .92), rgba(8, 12, 21, .9)) !important;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, .22);
+  }
+  .hero section h2 {
+    margin: 0 0 22px !important;
+    font-size: 26px !important;
+  }
+  .hero section .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 12px !important;
+  }
+}
+@media (max-width: 420px) {
+  header { padding-left: 20px !important; padding-right: 20px !important; }
+  .hero { padding-left: 20px !important; padding-right: 20px !important; }
+  header nav { gap: 7px !important; }
+  header nav a, header nav button { padding: 7px 8px !important; font-size: 12px !important; }
+}
