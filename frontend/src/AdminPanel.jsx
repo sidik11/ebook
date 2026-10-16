@@ -283,14 +283,14 @@ function AdminPanel() {
       showNotice("error", "This lock is not safely expired yet. Refresh after two minutes.");
       return;
     }
-    if (!window.confirm("Recover this expired checkout? The server will verify Razorpay status first. Unpaid old orders will be marked CANCELLED and the matching lock removed. If payment may have been captured, recovery will be refused.")) return;
+    if (!window.confirm("Recover and delete this expired checkout? The server will verify Razorpay status first. If it confirms the order is unpaid, the stale Firebase order record, matching lock, and coupon reservation will be removed. If payment may have been captured or cannot be verified, nothing will be deleted.")) return;
     setLockBusyKey(lock.lockKey);
     try {
       const result = await api("/api/admin/checkout-locks/" + encodeURIComponent(lock.lockKey) + "/recover", {
         method: "POST",
         body: JSON.stringify({})
       });
-      showNotice("success", result.status === "CANCELLED" ? "Old unpaid order cancelled and checkout lock removed." : "Expired checkout lock removed.");
+      showNotice("success", result.deleted ? "Verified unpaid order deleted from Firebase; checkout lock and coupon reservation cleared." : "Expired checkout lock removed. No matching order record needed deletion.");
       await Promise.all([loadCheckoutLocks(), loadOrders(), loadAnalytics()]);
     } catch (err) {
       showNotice("error", err.message || "Could not recover checkout lock. Refresh and check payment status.");
