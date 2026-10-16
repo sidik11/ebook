@@ -2442,7 +2442,19 @@ router.post("/orders/create", async (req, res) => {
       pricePaise = Math.max(0, basePricePaise - Math.round(discountRupees * 100));
       if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
       const reservationKey = hash(auth.userId);
-      const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
+      const couponRef = requireDb().ref("coupons/" + couponCode);
+      // Prime this exact RTDB reference immediately before the transaction.
+      // RTDB may invoke a transaction updater with null when its local cache
+      // is cold; the checkout must not abort just because that initial cache
+      // value is unavailable. The updater below still fails closed on null,
+      // so a deleted coupon can never be recreated from the earlier snapshot.
+      const latestCouponSnapshot = await couponRef.once("value");
+      const latestCoupon = latestCouponSnapshot.val();
+      if (!latestCoupon || couponStatus(latestCoupon) !== "ACTIVE" || couponExpiryIsPast(latestCoupon)) {
+        return res.status(400).json({ error: "This coupon is inactive or expired. Please apply it again." });
+      }
+      coupon = latestCoupon;
+      const couponTx = await couponRef.transaction(current => {
         if (!current || couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current)) return;
         const effective = {
           ...coupon,
