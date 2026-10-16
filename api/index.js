@@ -2008,19 +2008,27 @@ router.patch("/admin/orders/:id/terminate", async (req, res) => {
     const db = requireDb();
     let orderPath = "orders/" + key(orderId);
     let order = await get(orderPath);
+    // Legacy records may be stored under an internal Firebase key that differs
+    // from the Razorpay order ID displayed in the admin ledger.
     if (!order) {
-      const legacy = await get("order");
-      if (legacy && typeof legacy === "object") {
-        const entry = Object.entries(legacy).find(([childKey, value]) =>
-          String(value?.razorpayOrderId || value?.orderId || value?.id || childKey) === orderId
-        );
-        if (entry) {
-          orderPath = "order/" + key(entry[0]);
-          order = entry[1];
+      const db = requireDb();
+      for (const node of ["orders", "order"]) {
+        const snapshot = await db.ref(node).once("value");
+        let matched = null;
+        snapshot.forEach(child => {
+          if (matched) return;
+          const value = child.val();
+          const candidates = [child.key, value?.razorpayOrderId, value?.orderId, value?.id].filter(Boolean).map(String);
+          if (candidates.includes(orderId)) matched = { key: child.key, value };
+        });
+        if (matched) {
+          orderPath = node + "/" + key(matched.key);
+          order = matched.value;
+          break;
         }
       }
     }
-    if (!order) return res.status(404).json({ error: "Order not found." });
+    if (!order) return res.status(404).json({ error: "Order not found. Refresh the Orders list and try again." });
 
     const initialStatus = String(order.status || order.paymentStatus || "").trim().toUpperCase();
     if (!["CREATED", "PENDING"].includes(initialStatus)) {
@@ -2050,10 +2058,14 @@ router.patch("/admin/orders/:id/terminate", async (req, res) => {
     const terminatedOrder = tx.snapshot?.val() || {};
     const lockId = hash(String(terminatedOrder.userId || terminatedOrder.uid || "") + ":" + String(terminatedOrder.bookId || terminatedOrder.book || ""));
     const lockPath = "checkoutLocks/" + lockId;
+    // Remove the lock only when it still points to this exact order. Keeping a
+    // TERMINATED lock with an orderId would block the customer's next checkout.
     await db.ref(lockPath).transaction(current => {
       if (!current || String(current.orderId || "") !== orderId) return;
-      return { ...current, status: "TERMINATED", updatedAt: terminationTime };
-    }).catch(() => {});
+      return null;
+    }).catch(lockError => {
+      console.warn("Terminated order checkout-lock cleanup failed:", lockError.message);
+    });
     const couponCode = normalizeCouponCode(terminatedOrder.couponCode || "");
     if (couponCode && (terminatedOrder.userId || terminatedOrder.uid)) {
       const userKey = hash(String(terminatedOrder.userId || terminatedOrder.uid));
