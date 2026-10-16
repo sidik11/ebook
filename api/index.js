@@ -2821,8 +2821,45 @@ router.post("/orders/create", async (req, res) => {
     lockPath = "checkoutLocks/" + purchaseId;
     const existingLock = await get(lockPath);
     if (existingLock?.orderId && Number(existingLock.expiresAt || 0) <= now()) {
+      const staleOrder = await get("orders/" + key(existingLock.orderId));
+      const staleAgeMs = now() - Number(staleOrder?.createdAt || now());
+      if (staleOrder && ["CREATED", "PENDING"].includes(String(staleOrder.status || "").toUpperCase()) &&
+          staleAgeMs >= 2 * 60 * 1000 && !staleOrder.paymentId && !staleOrder.razorpayPaymentId &&
+          !staleOrder.paymentCapturedAt && !staleOrder.paidAt) {
+        const razorpay = getRazorpay();
+        const providerOrder = await razorpay.orders.fetch(String(staleOrder.razorpayOrderId || existingLock.orderId));
+        if (providerOrder && providerOrder.status !== "paid") {
+          const cancelTx = await requireDb().ref("orders/" + key(existingLock.orderId)).transaction(current => {
+            if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+            if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+            if (now() - Number(current.createdAt || now()) < 2 * 60 * 1000) return;
+            return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
+          });
+          if (cancelTx.committed) {
+            await requireDb().ref(lockPath).transaction(current =>
+              current && String(current.orderId || "") === String(existingLock.orderId) ? null : undefined
+            );
+            const oldCoupon = normalizeCouponCode(staleOrder.couponCode || "");
+            const oldUserId = String(staleOrder.userId || staleOrder.uid || "");
+            if (oldCoupon && oldUserId) {
+              await requireDb().ref("coupons/" + oldCoupon + "/reservations").transaction(current => {
+                if (!current || typeof current !== "object") return current;
+                const next = { ...current };
+                for (const [reservationId, entry] of Object.entries(next)) {
+                  const owner = couponReservationOwner(entry);
+                  if (String(entry?.orderId || "") === String(existingLock.orderId) ||
+                      owner === oldUserId || owner === hash(oldUserId)) delete next[reservationId];
+                }
+                return next;
+              });
+            }
+          }
+        }
+      }
+    }
+    if (existingLock?.orderId && Number(existingLock.expiresAt || 0) <= now()) {
       const existingOrder = await get("orders/" + key(existingLock.orderId));
-      if (existingOrder?.status === "CREATED" && existingOrder.userId === auth.userId && existingOrder.bookId === bookId) {
+      if (existingOrder?.status === "CREATED" && now() - Number(existingOrder.createdAt || now()) < 2 * 60 * 1000 && existingOrder.userId === auth.userId && existingOrder.bookId === bookId) {
         const razorpay = getRazorpay();
         const providerOrder = await razorpay.orders.fetch(existingLock.orderId);
         const requestedCouponCode = coupon ? couponCode : "";
