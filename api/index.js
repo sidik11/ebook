@@ -2217,13 +2217,22 @@ router.post("/admin/checkout-locks/:lockKey/recover", async (req, res) => {
       });
     }
 
+    // The admin action is explicitly Recover & Delete: after the provider
+    // order is verified unpaid and its lock/reservation are released, remove
+    // the matching stale ledger row from Firebase as requested. Keep the
+    // captured-payment safeguards above; never delete a payment-bearing row.
+    if (matchedOrder) {
+      await db.ref(matchedOrder.node + "/" + key(matchedOrder.key)).remove();
+    }
+
     await audit("CHECKOUT_LOCK_RECOVERED", auth, {
       lockKey, orderId: providerOrderId, matchedOrderNode: matchedOrder?.node || null,
-      matchedOrderKey: matchedOrder?.key || null, previousStatus: order?.status || lock.status || "UNKNOWN"
+      matchedOrderKey: matchedOrder?.key || null, previousStatus: order?.status || lock.status || "UNKNOWN",
+      orderDeleted: Boolean(matchedOrder)
     });
     res.set("Cache-Control", "no-store, max-age=0").json({
       ok: true, lockKey, orderId: providerOrderId,
-      status: matchedOrder ? "CANCELLED" : "LOCK_REMOVED"
+      status: matchedOrder ? "DELETED" : "LOCK_REMOVED", deleted: Boolean(matchedOrder)
     });
   } catch (e) {
     console.error("Checkout lock recovery error:", e);
