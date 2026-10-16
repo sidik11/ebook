@@ -3146,7 +3146,7 @@ router.post("/orders/create", async (req, res) => {
     if (refreshedLockBeforeAcquire?.orderId &&
         (Number(refreshedLockBeforeAcquire.expiresAt || 0) <= now() ||
          now() - Number(refreshedLockBeforeAcquire.createdAt || 0) >= 2 * 60 * 1000)) {
-      const staleId = String(lockBeforeAcquire.orderId);
+      const staleId = String(refreshedLockBeforeAcquire.orderId);
       const db = requireDb();
       let staleMatch = null;
       for (const node of ["orders", "order"]) {
