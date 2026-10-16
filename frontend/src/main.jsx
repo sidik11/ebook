@@ -415,19 +415,29 @@ function loadRazorpaySdk() {
     const script = document.createElement("script");
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
     script.async = true;
-    script.onload = () => {
-      if (window.Razorpay) resolve(window.Razorpay);
-      else {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(loadTimeout);
+      script.onload = null;
+      script.onerror = null;
+      if (error) {
         razorpaySdkPromise = null;
         script.remove();
-        reject(new Error("Razorpay could not initialize. Please try again."));
+        reject(error);
+      } else {
+        resolve(value);
       }
     };
-    script.onerror = () => {
-      razorpaySdkPromise = null;
-      script.remove();
-      reject(new Error("Could not load Razorpay. Check your internet connection and try again."));
+    const loadTimeout = window.setTimeout(() => {
+      finish(new Error("Razorpay is taking too long to load. Check your connection and try again."));
+    }, 15000);
+    script.onload = () => {
+      if (window.Razorpay) finish(null, window.Razorpay);
+      else finish(new Error("Razorpay could not initialize. Please try again."));
     };
+    script.onerror = () => finish(new Error("Could not load Razorpay. Check your internet connection and try again."));
     document.head.appendChild(script);
   });
   return razorpaySdkPromise;
@@ -1355,10 +1365,18 @@ function Detail() {
     setBuying(true);
 
     try {
-      const orderData = await api("/api/orders/create", {
-        method: "POST",
-        body: JSON.stringify({ bookId: id, ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}) })
-      });
+      const checkoutController = new AbortController();
+      const checkoutTimeout = window.setTimeout(() => checkoutController.abort(), 25000);
+      let orderData;
+      try {
+        orderData = await api("/api/orders/create", {
+          method: "POST",
+          signal: checkoutController.signal,
+          body: JSON.stringify({ bookId: id, ...(appliedCoupon ? { couponCode: appliedCoupon.code } : {}) })
+        });
+      } finally {
+        window.clearTimeout(checkoutTimeout);
+      }
 
       if (orderData.free) {
         navigate("/library");
@@ -1403,7 +1421,11 @@ function Detail() {
       });
       rzp.open();
     } catch (err) {
-      alert(err.message);
+      if (err?.name === "AbortError") {
+        alert("Checkout timed out before Razorpay opened. Do not pay again yet. Refresh My Library and check your Orders/payment status; if no payment was captured, try again.");
+      } else {
+        alert(err.message || "Checkout could not start. Please try again.");
+      }
     } finally {
       setBuying(false);
     }
