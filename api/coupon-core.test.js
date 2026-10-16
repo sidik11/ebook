@@ -160,8 +160,8 @@ test("admin payment ledger exposes coupon discount, payment method, and captured
   const start = apiSource.indexOf('router.get("/admin/orders"');
   const end = apiSource.indexOf('router.patch("/admin/books/:id"', start);
   const endpoint = apiSource.slice(start, end);
-  assert.match(endpoint, /originalAmount: Number\\(order\\.originalAmount/);
-  assert.match(endpoint, /couponCode: safeText\\(order\\.couponCode/);
-  assert.match(endpoint, /paymentMethod: safeText\\(order\\.paymentMethod/);
-  assert.match(endpoint, /paymentCapturedAt: Number\\(order\\.paymentCapturedAt/);
+  assert.match(endpoint, /originalAmount: Number\(order\.originalAmount/);
+  assert.match(endpoint, /couponCode: safeText\(order\.couponCode/);
+  assert.match(endpoint, /paymentMethod: safeText\(order\.paymentMethod/);
+  assert.match(endpoint, /paymentCapturedAt: Number\(order\.paymentCapturedAt/);
 });

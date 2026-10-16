@@ -9,6 +9,7 @@ const { google } = require("googleapis");
 const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { claimFreeCouponRedemption } = require("./coupon-core");
+const { isRevenueOrder, isPaymentAttemptOrder, revenueAmount } = require("./analytics-core");
 
 // Load local .env if present
 function loadEnv() {
@@ -1583,7 +1584,6 @@ router.get("/admin/analytics", async (req, res) => {
       db.ref("users").once("value"),
       db.ref("books").once("value"),
       db.ref("orders").once("value"),
-      // Keep analytics consistent with the ledger's legacy-order compatibility.
       db.ref("order").once("value"),
       db.ref("purchases").once("value"),
     ]);
@@ -1598,13 +1598,14 @@ router.get("/admin/analytics", async (req, res) => {
       const id = String(value.razorpayOrderId || value.orderId || value.id || child.key || "");
       if (!id) return null;
       const amount = value.amount != null ? Number(value.amount) : Number(value.amountPaise || 0) / 100;
+      const amountPaise = value.amountPaise != null ? Number(value.amountPaise) : Math.round((Number.isFinite(amount) ? amount : 0) * 100);
       return {
         ...value,
         id,
         razorpayOrderId: value.razorpayOrderId || value.orderId || id,
         amount: Number.isFinite(amount) ? amount : 0,
-        amountPaise: value.amountPaise != null ? Number(value.amountPaise) : Math.round((Number.isFinite(amount) ? amount : 0) * 100),
-        status: value.status || value.paymentStatus || "UNKNOWN",
+        amountPaise: Number.isSafeInteger(amountPaise) && amountPaise >= 0 ? amountPaise : 0,
+        status: String(value.status || value.paymentStatus || "UNKNOWN").toUpperCase(),
         _legacyOrderNode: legacy
       };
     };
@@ -1613,7 +1614,6 @@ router.get("/admin/analytics", async (req, res) => {
       const order = normalizeOrder(child, legacy);
       if (!order) return;
       const existing = orderById.get(order.id);
-      // Prefer the canonical /orders record, but retain older /order-only orders.
       if (!existing || (existing._legacyOrderNode && !legacy)) orderById.set(order.id, order);
     });
     addOrderSnapshot(legacyOrdersSnap, true);
@@ -1622,16 +1622,20 @@ router.get("/admin/analytics", async (req, res) => {
     const purchases = [];
     purchasesSnap.forEach(child => purchases.push({ id: child.key, ...(child.val() || {}) }));
 
-    const customerUsers = users.filter(u => u.role !== "admin");
-    const paidOrders = orders.filter(o => String(o.status || "").toUpperCase() === "PAID");
+    const customerUsers = users.filter(u => u.role !== "admin" && u.role !== "sadmin");
+    const paidOrders = orders.filter(isRevenueOrder);
+    const couponOrders = orders.filter(o =>
+      String(o.status || "").toUpperCase() === "PAID" &&
+      (String(o.paymentMethod || "").toUpperCase() === "COUPON" || Number(o.amountPaise || 0) === 0)
+    );
+    const completedOrders = orders.filter(o => String(o.status || "").toUpperCase() === "PAID");
     const openOrders = orders.filter(o => !["PAID", "DUPLICATE_CAPTURED", "SUPERSEDED"].includes(String(o.status || "").toUpperCase()));
     const paidPurchases = purchases.filter(p => String(p.status || "").toUpperCase() === "PAID");
-    // Financial totals must come from deduplicated paid orders, not purchases
-    // (which are access grants and can have a different legacy schema).
-    const totalBuyAmount = paidOrders.reduce((sum, o) => sum + Math.max(0, Number(o.amount || 0)), 0);
-    const uniqueBuyers = new Set(paidOrders.map(o => o.userId || o.uid).filter(Boolean));
-    if (!uniqueBuyers.size) paidPurchases.forEach(p => { if (p.userId || p.uid) uniqueBuyers.add(p.userId || p.uid); });
 
+    // Revenue, paid-order counts, conversion metrics, and top sellers exclude
+    // zero-value coupon grants. Those remain visible as completed orders/unlocks.
+    const totalBuyAmount = paidOrders.reduce((sum, order) => sum + revenueAmount(order), 0);
+    const uniqueBuyers = new Set(paidOrders.map(o => o.userId || o.uid).filter(Boolean));
     const nowTs = now();
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -1639,7 +1643,10 @@ router.get("/admin/analytics", async (req, res) => {
     const last7Start = nowTs - 7 * 24 * 60 * 60 * 1000;
     const last30Start = nowTs - 30 * 24 * 60 * 60 * 1000;
     const orderTimestamp = o => Number(o.paymentCapturedAt || o.paidAt || o.createdAt || 0);
-    const sumSince = since => paidOrders.filter(o => orderTimestamp(o) >= since).reduce((sum, o) => sum + Math.max(0, Number(o.amount || 0)), 0);
+    const sumSince = since => paidOrders
+      .filter(o => orderTimestamp(o) >= since)
+      .reduce((sum, o) => sum + revenueAmount(o), 0);
+    const paymentAttempts = orders.filter(isPaymentAttemptOrder);
 
     const topBookMap = new Map();
     paidOrders.forEach(order => {
@@ -1647,7 +1654,7 @@ router.get("/admin/analytics", async (req, res) => {
       if (!bookId) return;
       const current = topBookMap.get(bookId) || { bookId, sales: 0, revenue: 0 };
       current.sales += 1;
-      current.revenue += Number(order.amount || 0);
+      current.revenue += revenueAmount(order);
       topBookMap.set(bookId, current);
     });
     const bookMap = new Map(books.map(book => [book.id, book]));
@@ -1667,11 +1674,8 @@ router.get("/admin/analytics", async (req, res) => {
       const next = day.getTime() + 24 * 60 * 60 * 1000;
       const amount = paidOrders
         .filter(o => orderTimestamp(o) >= day.getTime() && orderTimestamp(o) < next)
-        .reduce((sum, o) => sum + Number(o.amount || 0), 0);
-      dailyRevenue.push({
-        date: day.toISOString().slice(5, 10),
-        amount
-      });
+        .reduce((sum, o) => sum + revenueAmount(o), 0);
+      dailyRevenue.push({ date: day.toISOString().slice(5, 10), amount });
     }
 
     const activeBooks = books.filter(b => String(b.status || "").toUpperCase() === "ACTIVE").length;
@@ -1685,14 +1689,14 @@ router.get("/admin/analytics", async (req, res) => {
       .sort((a, b) => orderTimestamp(b) - orderTimestamp(a))
       .slice(0, 8)
       .map(order => {
-        const customer = users.find(u => u.id === order.userId);
+        const customer = users.find(u => u.id === (order.userId || order.uid));
         const book = bookMap.get(order.bookId);
         return {
           id: order.id,
           userEmail: validEmail(customer?.email) ? customer.email : "—",
           userName: safeText(customer?.name, 120) || "Customer",
           bookTitle: safeText(book?.title, MAX_BOOK_TITLE) || "Deleted book",
-          amount: Number(order.amount || 0),
+          amount: revenueAmount(order),
           paymentId: safeText(order.paymentId, 100) || "—",
           orderId: safeText(order.razorpayOrderId || order.id, 100),
           createdAt: Number(order.createdAt || 0),
@@ -1713,25 +1717,26 @@ router.get("/admin/analytics", async (req, res) => {
         freeBooks,
         totalOrders: orders.length,
         paidOrders: paidOrders.length,
+        couponOrders: couponOrders.length,
+        completedOrders: completedOrders.length,
         openOrders: openOrders.length,
         totalPurchases: paidPurchases.length,
         uniqueBuyers: uniqueBuyers.size,
-        totalBuyAmount: totalBuyAmount,
+        totalBuyAmount,
         averageOrderValue: averageOrder,
         todayRevenue: sumSince(dayStart),
         last7DaysRevenue: sumSince(last7Start),
         last30DaysRevenue: sumSince(last30Start),
-        paymentSuccessRate: orders.length ? (paidOrders.length / orders.length) * 100 : 0
+        paymentSuccessRate: paymentAttempts.length ? (paidOrders.length / paymentAttempts.length) * 100 : 0
       },
       dailyRevenue,
       topBooks,
       recentOrders
     });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message || "Could not load administrator analytics" });
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not load administrator analytics" });
   }
 });
-
 router.get("/admin/users", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
@@ -2755,7 +2760,7 @@ async function finalizePayment(paymentId, orderId) {
   const purchasePath = "purchases/" + purchaseId;
   const eventPath = "paymentEvents/" + paymentId;
   const priorEvent = await get(eventPath);
-  if (priorEvent?.status === "PROCESSED") return { alreadyProcessed: true };
+  if (priorEvent?.status === "PROCESSED" && (!order.couponCode || ["COMPLETE", "NOT_REQUIRED"].includes(String(order.couponAccountingStatus || "").toUpperCase()))) return { alreadyProcessed: true };
   if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
 
   // The purchase record is the single atomic entitlement gate. Only one
@@ -2780,7 +2785,7 @@ async function finalizePayment(paymentId, orderId) {
     status: duplicateCaptured ? "DUPLICATE_CAPTURED" : "PROCESSED",
     orderId, userId: order.userId, bookId: order.bookId, processedAt: now(),
     amount: Number(order.amount || 0), amountPaise: Number(order.amountPaise || 0),
-    currency: safeText(payment.currency || "INR", 8), paymentMethod, capturedAt,
+    currency: safeText(payment.currency || "INR", 8), paymentMethod: paymentMethod, capturedAt,
     refundStatus: duplicateCaptured ? "REVIEW_REQUIRED" : "NOT_REQUIRED",
     ...(duplicateCaptured ? { duplicateOfPaymentId: currentPurchase.paymentId } : {})
   };
@@ -2810,31 +2815,39 @@ async function finalizePayment(paymentId, orderId) {
     const code = normalizeCouponCode(order.couponCode);
     try {
       const usePath = "couponUses/" + code + "/" + hash(order.userId);
-      const useTx = await db.ref(usePath).transaction(current => {
-        if (current) return;
-        return {
-          userId: order.userId, bookId: order.bookId, orderId,
-          discount: Number(order.discount || 0),
-          originalAmount: Number(order.originalAmount || order.amount),
-          paidAmount: Number(order.amount || 0), usedAt: now()
-        };
+      const useTx = await db.ref(usePath).transaction(current => current || {
+        userId: order.userId, bookId: order.bookId, orderId,
+        discount: Number(order.discount || 0),
+        originalAmount: Number(order.originalAmount || order.amount),
+        paidAmount: Number(order.amount || 0), usedAt: now()
       });
-      if (useTx.committed) {
-        await db.ref("coupons/" + code).transaction(current => {
-          if (!current) return;
-          const reservations = { ...(current.reservations || {}) };
-          const userKey = hash(order.userId);
-          for (const [reservationId, entry] of Object.entries(reservations)) {
-            const owner = couponReservationOwner(entry);
-            if (owner === order.userId || owner === userKey ||
-                (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
-              delete reservations[reservationId];
-            }
-          }
-          return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
-        });
+      const useRecord = useTx.snapshot?.val();
+      if (!useRecord || useRecord.userId !== order.userId ||
+          useRecord.bookId !== order.bookId || useRecord.orderId !== orderId) {
+        throw new Error("Coupon-use ledger conflicts with the captured order.");
       }
-      await db.ref("orders/" + orderId).update({ couponAccountingStatus: "COMPLETE", couponAccountingUpdatedAt: now() });
+
+      // Reconcile the aggregate counter from the per-user ledger rather than
+      // blindly incrementing it. This makes retries safe if a previous attempt
+      // wrote couponUses but failed before updating coupons.usedCount.
+      const allUses = await get("couponUses/" + code);
+      const ledgerCount = allUses && typeof allUses === "object" ? Object.keys(allUses).length : 0;
+      const couponTx = await db.ref("coupons/" + code).transaction(current => {
+        if (!current) return;
+        const reservations = { ...(current.reservations || {}) };
+        const userKey = hash(order.userId);
+        for (const [reservationId, entry] of Object.entries(reservations)) {
+          const owner = couponReservationOwner(entry);
+          if (owner === order.userId || owner === userKey ||
+              (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
+            delete reservations[reservationId];
+          }
+        }
+        const reconciledUsedCount = couponRecordedUses(current, ledgerCount);
+        return { ...current, usedCount: reconciledUsedCount, reservations };
+      });
+      if (!couponTx.committed) throw new Error("Coupon record is missing; accounting remains pending.");
+      await db.ref("orders/" + orderId).update({ couponAccountingStatus: "COMPLETE", couponAccountingUpdatedAt: now(), couponAccountingError: null });
     } catch (couponAccountingError) {
       console.error("Captured payment recorded but coupon accounting needs reconciliation", {
         orderId, paymentId, code, error: safeText(couponAccountingError?.message, 240)
@@ -3023,7 +3036,8 @@ router.get("/library", async (req, res) => {
 
 router.get("/books/:id/secure-url", async (req, res) => {
   try {
-    const auth = await guard(req, res);
+    const portal = requestPortal(req);
+    const auth = await guard(req, res, portal);
     if (!auth) return;
     const id = key(req.params.id);
     const book = await get("books/" + id);
@@ -3031,7 +3045,7 @@ router.get("/books/:id/secure-url", async (req, res) => {
       return res.status(404).json({ error: "Ebook unavailable" });
     }
     const free = book.type === "FREE" || Number(book.price || 0) === 0;
-    const isAdmin = auth.user.role === "admin";
+    const isAdmin = portal === "admin" && auth.user.role === "admin";
     if (!free && !isAdmin) {
       const purchase = await owned(auth.userId, id);
       if (!purchase || purchase.status !== "PAID") {
