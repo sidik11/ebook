@@ -88,3 +88,18 @@ test("expired reservations do not block the final coupon use", () => {
   assert.ok(next);
   assert.equal(next.usedCount, 1);
 });
+
+
+test("paid checkout primes the coupon reference and retries one transient reservation abort", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const routeStart = apiSource.indexOf('router.post("/orders/create"');
+  const routeEnd = apiSource.indexOf("async function finalizePayment", routeStart);
+  const route = apiSource.slice(routeStart, routeEnd);
+  const prime = route.indexOf('await couponRef.once("value")');
+  const transaction = route.indexOf("const reserveCoupon = () => couponRef.transaction");
+  const retry = route.indexOf("let couponTx = await reserveCoupon()");
+  assert.ok(prime >= 0 && transaction > prime && retry > transaction);
+  assert.match(route.slice(retry, retry + 700), /const retrySnapshot = await couponRef\.once\("value"\)/);
+});

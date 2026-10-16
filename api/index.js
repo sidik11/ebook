@@ -2433,7 +2433,18 @@ router.post("/orders/create", async (req, res) => {
       pricePaise = Math.max(0, basePricePaise - Math.round(discountRupees * 100));
       if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
       const reservationKey = hash(auth.userId);
-      const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
+      const couponRef = requireDb().ref("coupons/" + couponCode);
+      // Prime this exact Firebase reference before transacting. The Admin SDK
+      // can invoke a transaction updater with null when its local cache is cold;
+      // returning undefined in that case aborts checkout even when the coupon
+      // exists on the server.
+      const latestCouponSnapshot = await couponRef.once("value");
+      const latestCoupon = latestCouponSnapshot.val();
+      if (!latestCoupon || couponStatus(latestCoupon) !== "ACTIVE" || couponExpiryIsPast(latestCoupon)) {
+        return res.status(400).json({ error: "This coupon is inactive or expired. Please apply it again." });
+      }
+      coupon = latestCoupon;
+      const reserveCoupon = () => couponRef.transaction(current => {
         if (!current || couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current)) return;
         const effective = {
           ...coupon,
@@ -2471,6 +2482,17 @@ router.post("/orders/create", async (req, res) => {
         };
         return { ...effective, reservations };
       });
+      let couponTx = await reserveCoupon();
+      if (!couponTx.committed) {
+        // Refresh and retry once only if the coupon still exists and is active.
+        // This recovers transient transaction aborts without recreating deleted coupons.
+        const retrySnapshot = await couponRef.once("value");
+        const retryCoupon = retrySnapshot.val();
+        if (retryCoupon && couponStatus(retryCoupon) === "ACTIVE" && !couponExpiryIsPast(retryCoupon)) {
+          coupon = retryCoupon;
+          couponTx = await reserveCoupon();
+        }
+      }
       if (!couponTx.committed) {
         // Distinguish a truly exhausted coupon from a concurrent request that
         // already created this user's reservation for the same book.
