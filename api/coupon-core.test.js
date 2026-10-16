@@ -103,3 +103,15 @@ test("paid checkout primes the coupon reference and retries one transient reserv
   assert.ok(prime >= 0 && transaction > prime && retry > transaction);
   assert.match(route.slice(retry, retry + 700), /const retrySnapshot = await couponRef\.once\("value"\)/);
 });
+
+
+test("coupon reservation 503 includes safe diagnostic reason and logs transaction state", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /abortReason: reservationAbortReason/);
+  assert.match(apiSource, /code: "COUPON_RESERVATION_FAILED"/);
+  assert.match(apiSource, /Coupon reservation transaction did not commit after retry/);
+  assert.match(apiSource, /coupon_missing_in_transaction/);
+  assert.match(apiSource, /usage_limit_or_reservation_capacity/);
+});

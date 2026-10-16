@@ -2444,8 +2444,12 @@ router.post("/orders/create", async (req, res) => {
         return res.status(400).json({ error: "This coupon is inactive or expired. Please apply it again." });
       }
       coupon = latestCoupon;
+      let reservationAbortReason = "not_attempted";
       const reserveCoupon = () => couponRef.transaction(current => {
-        if (!current || couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current)) return;
+        reservationAbortReason = "unknown";
+        if (!current) { reservationAbortReason = "coupon_missing_in_transaction"; return; }
+        if (couponStatus(current) !== "ACTIVE") { reservationAbortReason = "coupon_inactive"; return; }
+        if (couponExpiryIsPast(current)) { reservationAbortReason = "coupon_expired"; return; }
         const effective = {
           ...coupon,
           ...current,
@@ -2455,7 +2459,10 @@ router.post("/orders/create", async (req, res) => {
           status: current.status ?? coupon.status ?? "ACTIVE",
           expiresAt: current.expiresAt ?? coupon.expiresAt ?? null
         };
-        if (couponStatus(effective) !== "ACTIVE" || couponExpiryIsPast(effective)) return;
+        if (couponStatus(effective) !== "ACTIVE" || couponExpiryIsPast(effective)) {
+          reservationAbortReason = "coupon_state_changed";
+          return;
+        }
         const reservations = { ...(effective.reservations || {}) };
         const currentTime = now();
         let ownReservation = null;
@@ -2474,7 +2481,13 @@ router.post("/orders/create", async (req, res) => {
         const activeOtherReservations = couponLiveReservations({ ...effective, reservations }, currentTime, auth.userId);
         const recordedUses = couponRecordedUses(effective);
         const maxUses = Number(effective.maxUses || 0);
-        if (!ownReservation && (!Number.isInteger(maxUses) || maxUses < 1 || recordedUses + activeOtherReservations >= maxUses)) return;
+        if (!Number.isSafeInteger(maxUses) || maxUses < 1) {
+          reservationAbortReason = "invalid_usage_limit";
+          if (!ownReservation) return;
+        } else if (!ownReservation && recordedUses + activeOtherReservations >= maxUses) {
+          reservationAbortReason = "usage_limit_or_reservation_capacity";
+          return;
+        }
         reservations[reservationKey] = {
           userId: auth.userId,
           bookId,
@@ -2514,7 +2527,20 @@ router.post("/orders/create", async (req, res) => {
           if (activeReservations > 0) {
             return res.status(409).json({ error: "This coupon is temporarily held by another checkout. Please retry after that checkout expires.", diagnostics: { configuredMaxUses: maxUses, recordedUses, activeReservations } });
           }
-          return res.status(503).json({ error: "Coupon checkout was interrupted by a concurrent update. Please retry." });
+          console.error("Coupon reservation transaction did not commit after retry", {
+            code: couponCode, bookId, abortReason: reservationAbortReason,
+            couponRecordPresent: Boolean(couponTx.snapshot?.exists?.()),
+            configuredMaxUses: maxUses, recordedUses, activeReservations
+          });
+          return res.status(503).json({
+            error: "Coupon checkout could not reserve a usage slot. Please retry.",
+            code: "COUPON_RESERVATION_FAILED",
+            diagnostics: {
+              abortReason: reservationAbortReason,
+              couponRecordPresent: Boolean(couponTx.snapshot?.exists?.()),
+              configuredMaxUses: maxUses, recordedUses, activeReservations
+            }
+          });
         }
       }
     }
