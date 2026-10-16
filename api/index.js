@@ -1579,10 +1579,12 @@ router.get("/admin/analytics", async (req, res) => {
     res.set("Cache-Control", "no-store, max-age=0");
 
     const db = requireDb();
-    const [usersSnap, booksSnap, ordersSnap, purchasesSnap] = await Promise.all([
+    const [usersSnap, booksSnap, ordersSnap, legacyOrdersSnap, purchasesSnap] = await Promise.all([
       db.ref("users").once("value"),
       db.ref("books").once("value"),
       db.ref("orders").once("value"),
+      // Keep analytics consistent with the ledger's legacy-order compatibility.
+      db.ref("order").once("value"),
       db.ref("purchases").once("value"),
     ]);
 
@@ -1590,20 +1592,45 @@ router.get("/admin/analytics", async (req, res) => {
     usersSnap.forEach(child => users.push({ id: child.key, ...(child.val() || {}) }));
     const books = [];
     booksSnap.forEach(child => books.push({ id: child.key, ...(child.val() || {}) }));
-    const orders = [];
-    ordersSnap.forEach(child => orders.push({ id: child.key, ...(child.val() || {}) }));
+    const normalizeOrder = (child, legacy = false) => {
+      const value = child.val();
+      if (!value || typeof value !== "object") return null;
+      const id = String(value.razorpayOrderId || value.orderId || value.id || child.key || "");
+      if (!id) return null;
+      const amount = value.amount != null ? Number(value.amount) : Number(value.amountPaise || 0) / 100;
+      return {
+        ...value,
+        id,
+        razorpayOrderId: value.razorpayOrderId || value.orderId || id,
+        amount: Number.isFinite(amount) ? amount : 0,
+        amountPaise: value.amountPaise != null ? Number(value.amountPaise) : Math.round((Number.isFinite(amount) ? amount : 0) * 100),
+        status: value.status || value.paymentStatus || "UNKNOWN",
+        _legacyOrderNode: legacy
+      };
+    };
+    const orderById = new Map();
+    const addOrderSnapshot = (snapshot, legacy = false) => snapshot.forEach(child => {
+      const order = normalizeOrder(child, legacy);
+      if (!order) return;
+      const existing = orderById.get(order.id);
+      // Prefer the canonical /orders record, but retain older /order-only orders.
+      if (!existing || (existing._legacyOrderNode && !legacy)) orderById.set(order.id, order);
+    });
+    addOrderSnapshot(legacyOrdersSnap, true);
+    addOrderSnapshot(ordersSnap, false);
+    const orders = [...orderById.values()];
     const purchases = [];
     purchasesSnap.forEach(child => purchases.push({ id: child.key, ...(child.val() || {}) }));
 
     const customerUsers = users.filter(u => u.role !== "admin");
     const paidOrders = orders.filter(o => String(o.status || "").toUpperCase() === "PAID");
-    const openOrders = orders.filter(o => String(o.status || "").toUpperCase() !== "PAID");
+    const openOrders = orders.filter(o => !["PAID", "DUPLICATE_CAPTURED", "SUPERSEDED"].includes(String(o.status || "").toUpperCase()));
     const paidPurchases = purchases.filter(p => String(p.status || "").toUpperCase() === "PAID");
-    const revenue = paidOrders.reduce((sum, o) => sum + Number(o.amount || 0), 0);
-    const purchaseRevenue = paidPurchases.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-    const totalBuyAmount = revenue || purchaseRevenue;
-    const uniqueBuyers = new Set(paidOrders.map(o => o.userId).filter(Boolean));
-    if (!uniqueBuyers.size) paidPurchases.forEach(p => { if (p.userId) uniqueBuyers.add(p.userId); });
+    // Financial totals must come from deduplicated paid orders, not purchases
+    // (which are access grants and can have a different legacy schema).
+    const totalBuyAmount = paidOrders.reduce((sum, o) => sum + Math.max(0, Number(o.amount || 0)), 0);
+    const uniqueBuyers = new Set(paidOrders.map(o => o.userId || o.uid).filter(Boolean));
+    if (!uniqueBuyers.size) paidPurchases.forEach(p => { if (p.userId || p.uid) uniqueBuyers.add(p.userId || p.uid); });
 
     const nowTs = now();
     const startOfDay = new Date();
@@ -1611,7 +1638,8 @@ router.get("/admin/analytics", async (req, res) => {
     const dayStart = startOfDay.getTime();
     const last7Start = nowTs - 7 * 24 * 60 * 60 * 1000;
     const last30Start = nowTs - 30 * 24 * 60 * 60 * 1000;
-    const sumSince = since => paidOrders.filter(o => Number(o.createdAt || 0) >= since).reduce((sum, o) => sum + Number(o.amount || 0), 0);
+    const orderTimestamp = o => Number(o.paymentCapturedAt || o.paidAt || o.createdAt || 0);
+    const sumSince = since => paidOrders.filter(o => orderTimestamp(o) >= since).reduce((sum, o) => sum + Math.max(0, Number(o.amount || 0)), 0);
 
     const topBookMap = new Map();
     paidOrders.forEach(order => {
@@ -1638,7 +1666,7 @@ router.get("/admin/analytics", async (req, res) => {
       const day = new Date(dayStart - i * 24 * 60 * 60 * 1000);
       const next = day.getTime() + 24 * 60 * 60 * 1000;
       const amount = paidOrders
-        .filter(o => Number(o.createdAt || 0) >= day.getTime() && Number(o.createdAt || 0) < next)
+        .filter(o => orderTimestamp(o) >= day.getTime() && orderTimestamp(o) < next)
         .reduce((sum, o) => sum + Number(o.amount || 0), 0);
       dailyRevenue.push({
         date: day.toISOString().slice(5, 10),
@@ -1654,7 +1682,7 @@ router.get("/admin/analytics", async (req, res) => {
     const averageOrder = paidOrders.length ? totalBuyAmount / paidOrders.length : 0;
 
     const recentOrders = [...paidOrders]
-      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+      .sort((a, b) => orderTimestamp(b) - orderTimestamp(a))
       .slice(0, 8)
       .map(order => {
         const customer = users.find(u => u.id === order.userId);
@@ -1667,7 +1695,8 @@ router.get("/admin/analytics", async (req, res) => {
           amount: Number(order.amount || 0),
           paymentId: safeText(order.paymentId, 100) || "—",
           orderId: safeText(order.razorpayOrderId || order.id, 100),
-          createdAt: Number(order.createdAt || 0)
+          createdAt: Number(order.createdAt || 0),
+          paymentCapturedAt: Number(order.paymentCapturedAt || order.paidAt || 0)
         };
       });
 
