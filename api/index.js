@@ -641,13 +641,13 @@ function routeRateLimitPolicy(req) {
   if (method === "POST" && path === "/coupons/redeem-free") return { bucket: "coupon-redeem", limit: 10 };
   if (method === "POST" && (path === "/admin/upload-url" || path === "/sadmin/upload-url")) return { bucket: "upload-url", limit: 20 };
   if (method === "GET" && (path === "/admin/upload-status" || path === "/sadmin/upload-status")) return { bucket: "upload-status", limit: 60 };
-  if (method === "GET" && /^\\/books\\/[^/]+\\/secure-url$/.test(path)) return { bucket: "secure-url", limit: 30 };
-  if (method === "POST" && /^\\/admin\\/complaints\\/[^/]+\\/refund$/.test(path)) return { bucket: "refund", limit: 5 };
+  if (method === "GET" && path.startsWith("/books/") && path.endsWith("/secure-url") && path.split("/").length === 4) return { bucket: "secure-url", limit: 30 };
+  if (method === "POST" && path.startsWith("/admin/complaints/") && path.endsWith("/refund") && path.split("/").length === 5) return { bucket: "refund", limit: 5 };
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && path.startsWith("/admin/")) return { bucket: "admin-write", limit: 120 };
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && path.startsWith("/sadmin/")) return { bucket: "sadmin-write", limit: 90 };
   if (method === "GET" && path.startsWith("/admin/")) return { bucket: "admin-read", limit: 240 };
   if (method === "GET" && path.startsWith("/sadmin/")) return { bucket: "sadmin-read", limit: 180 };
-  if (method === "GET" && (path === "/books" || path === "/featured-books" || /^\\/books\\/[^/]+$/.test(path))) return { bucket: "catalog-read", limit: 300 };
+  if (method === "GET" && (path === "/books" || path === "/featured-books" || (path.startsWith("/books/") && path.split("/").length === 3))) return { bucket: "catalog-read", limit: 300 };
   if (method === "GET" && path === "/library") return { bucket: "library-read", limit: 60 };
   return null;
 }
