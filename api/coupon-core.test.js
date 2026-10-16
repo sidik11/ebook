@@ -146,6 +146,17 @@ test("paid coupon rejects missing, deleted, expired, invalid-expiry, and mismatc
   assert.equal(claimPaidCouponRedemption({ ...base(), discountPercent: 100 }, args), undefined);
 });
 
+test("paid coupon must match the discount percentage saved on the checkout", () => {
+  const args = {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", couponCode: "FREECOUPON01",
+    expectedDiscountPercent: 25, timestamp: 1_800_000_000_000, hash
+  };
+  assert.equal(claimPaidCouponRedemption({ ...base(), discountPercent: 50 }, args), undefined);
+  const accepted = claimPaidCouponRedemption({ ...base(), discountPercent: 25 }, args);
+  assert.equal(accepted.usedCount, 1);
+});
+
 test("paid coupon refuses invalid max-use limits and does not overrun live reservations", () => {
   const args = {
     userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
