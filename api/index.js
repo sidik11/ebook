@@ -8,7 +8,7 @@ const Razorpay = require("razorpay");
 const { google } = require("googleapis");
 const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-const { claimFreeCouponRedemption } = require("./coupon-core");
+const { claimFreeCouponRedemption, claimPaidCouponRedemption } = require("./coupon-core");
 
 // Load local .env if present
 function loadEnv() {
