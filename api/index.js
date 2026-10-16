@@ -2628,6 +2628,7 @@ router.post("/orders/create", async (req, res) => {
     await set("orders/" + order.id, {
       userId: auth.userId, bookId, amountPaise: order.amount, amount: Number((order.amount / 100).toFixed(2)),
       originalAmount: Number(book.price), discount: discountRupees, couponCode: coupon ? couponCode : "",
+      ...(coupon ? { couponDiscountPercent: couponPercent(coupon) } : {}),
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
     await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
@@ -2680,6 +2681,7 @@ async function finalizePayment(paymentId, orderId) {
             bookId: order.bookId,
             orderId,
             couponCode: code,
+            expectedDiscountPercent: order.couponDiscountPercent,
             timestamp: now(),
             hash
           })
