@@ -2508,35 +2508,85 @@ router.post("/orders/create", async (req, res) => {
     const purchase = await owned(auth.userId, bookId);
 
     // A 100% coupon grants access without sending a zero-value order to Razorpay.
+    // Use the same atomic redemption helper as /coupons/redeem-free so the
+    // coupon usage counter and redemption ledger cannot drift apart.
     if (coupon && pricePaise === 0) {
       const db = requireDb();
+      const userKey = hash(auth.userId);
       const purchaseId = hash(auth.userId + ":" + bookId);
-      const orderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
-      const purchaseTx = await db.ref("purchases/" + purchaseId).transaction(current => {
+      const proposedOrderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
+      const purchaseRef = db.ref("purchases/" + purchaseId);
+      const purchaseTx = await purchaseRef.transaction(current => {
         if (current?.status === "PAID") return;
-        return { userId: auth.userId, bookId, orderId, paymentId: "", amount: 0, amountPaise: 0, status: "PAID", purchasedAt: now(), couponCode, originalAmount: Number(book.price || 0), discount: discountRupees };
+        if (current?.status === "PENDING_COUPON" &&
+            current.userId === auth.userId && current.bookId === bookId) return current;
+        return {
+          userId: auth.userId, bookId, orderId: proposedOrderId, paymentId: "",
+          amount: 0, amountPaise: 0, status: "PENDING_COUPON",
+          createdAt: now(), couponCode, originalAmount: Number(book.price || 0),
+          discount: discountRupees
+        };
       });
-      if (!purchaseTx.committed) {
-        await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId)).remove();
-        const currentPurchase = purchaseTx.snapshot.val();
-        if (currentPurchase?.status === "PAID" && currentPurchase.userId === auth.userId && currentPurchase.bookId === bookId) {
-          return res.json({ free: true, alreadyOwned: true, bookId });
-        }
-        return res.status(409).json({ error: "This ebook has already been purchased." });
+      const pendingPurchase = purchaseTx.snapshot?.val();
+      if (pendingPurchase?.status === "PAID") {
+        await db.ref("coupons/" + couponCode + "/reservations/" + userKey).remove();
+        return res.json({ free: true, alreadyOwned: true, bookId });
       }
-      const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => {
-        if (current) return;
-        return { userId: auth.userId, bookId, orderId, discount: discountRupees, originalAmount: Number(book.price || 0), paidAmount: 0, usedAt: now() };
+      if (!pendingPurchase || pendingPurchase.userId !== auth.userId ||
+          pendingPurchase.bookId !== bookId || pendingPurchase.status !== "PENDING_COUPON") {
+        await db.ref("coupons/" + couponCode + "/reservations/" + userKey).remove();
+        return res.status(409).json({ error: "This ebook has already been purchased or is being finalized." });
+      }
+
+      const orderId = pendingPurchase.orderId || proposedOrderId;
+      const redemptionTime = now();
+      const redemptionTx = await db.ref("coupons/" + couponCode).transaction(current =>
+        claimFreeCouponRedemption(current, {
+          configuredCoupon: coupon, userId: auth.userId, userKey, bookId,
+          pricePaise: basePricePaise, timestamp: redemptionTime, hash
+        })
+      );
+      const redeemedCoupon = redemptionTx.snapshot?.val() || {};
+      const existingRedemption = (redeemedCoupon.redemptions || {})[userKey];
+      const redemptionAccepted = redemptionTx.committed || existingRedemption?.bookId === bookId;
+      if (!redemptionAccepted) {
+        await purchaseRef.transaction(current =>
+          current?.status === "PENDING_COUPON" && current.orderId === orderId ? null : undefined
+        );
+        await db.ref("coupons/" + couponCode + "/reservations/" + userKey).remove();
+        const maxUses = Number(redeemedCoupon.maxUses ?? redeemedCoupon.max_uses ?? coupon.maxUses ?? 0);
+        const used = Number(redeemedCoupon.usedCount ?? redeemedCoupon.usesCount ?? redeemedCoupon.redeemedCount ?? 0);
+        if (Number.isFinite(maxUses) && maxUses > 0 && used >= maxUses) {
+          return res.status(409).json({ error: "This coupon has reached its usage limit." });
+        }
+        return res.status(409).json({ error: "This coupon could not be redeemed safely. Please retry." });
+      }
+
+      const paidPurchaseTx = await purchaseRef.transaction(current => {
+        if (current?.status === "PAID") return;
+        if (current?.status !== "PENDING_COUPON" || current.orderId !== orderId ||
+            current.userId !== auth.userId || current.bookId !== bookId) return;
+        return { ...current, status: "PAID", purchasedAt: now() };
       });
-      await db.ref("coupons/" + couponCode).transaction(current => {
-        if (!current) return;
-        const reservations = current.reservations || {};
-        delete reservations[hash(auth.userId)];
-        return { ...current, usedCount: Number(current.usedCount || 0) + (useTx.committed ? 1 : 0), reservations };
+      const finalPurchase = paidPurchaseTx.snapshot?.val();
+      if (!finalPurchase || finalPurchase.status !== "PAID" ||
+          finalPurchase.userId !== auth.userId || finalPurchase.bookId !== bookId) {
+        return res.status(503).json({ error: "Coupon redeemed but library access is still being finalized. Retry this same coupon for this ebook." });
+      }
+
+      await db.ref("couponUses/" + couponCode + "/" + userKey).transaction(current => current || {
+        userId: auth.userId, bookId, orderId, discount: discountRupees,
+        originalAmount: Number(book.price || 0), paidAmount: 0,
+        usedAt: finalPurchase.purchasedAt || now()
       });
-      await set("orders/" + orderId, { userId: auth.userId, bookId, amountPaise: 0, amount: 0, originalAmount: Number(book.price || 0), discount: discountRupees, couponCode, status: "PAID", createdAt: now(), updatedAt: now(), razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON" });
+      await set("orders/" + orderId, {
+        userId: auth.userId, bookId, amountPaise: 0, amount: 0,
+        originalAmount: Number(book.price || 0), discount: discountRupees,
+        couponCode, status: "PAID", createdAt: finalPurchase.purchasedAt || now(),
+        updatedAt: now(), razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON"
+      });
       await audit("COUPON_REDEEMED_FREE_PURCHASE", auth, { code: couponCode, bookId, orderId });
-      return res.json({ free: true, order_id: orderId, couponCode, discount: discountRupees });
+      return res.set("Cache-Control", "no-store").json({ free: true, order_id: orderId, couponCode, discount: discountRupees });
     }
 
     // Recover an unpaid order if the customer closed checkout or the lock expired.
