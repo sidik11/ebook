@@ -2513,7 +2513,20 @@ router.post("/orders/create", async (req, res) => {
           if (activeReservations > 0) {
             return res.status(409).json({ error: "This coupon is temporarily held by another checkout. Please retry after that checkout expires.", diagnostics: { configuredMaxUses: maxUses, recordedUses, activeReservations } });
           }
-          return res.status(503).json({ error: "Coupon checkout was interrupted by a concurrent update. Please retry." });
+          // Include safe, non-sensitive transaction diagnostics so a genuine
+          // RTDB abort can be distinguished from an exhausted coupon or a
+          // deleted/changed record. Do not expose user IDs or reservation keys.
+          return res.status(503).json({
+            error: "Coupon checkout was interrupted by a concurrent update. Please retry.",
+            diagnostics: {
+              transactionCommitted: Boolean(couponTx.committed),
+              couponRecordPresent: Boolean(couponTx.snapshot?.exists?.()),
+              configuredMaxUses: maxUses,
+              recordedUses,
+              activeReservations,
+              ownReservationPresent: false
+            }
+          });
         }
       }
     }
