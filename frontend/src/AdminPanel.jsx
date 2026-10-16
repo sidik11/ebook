@@ -397,6 +397,10 @@ function AdminPanel() {
     if (!initialized) loadAll();
   }, [user]);
 
+  useEffect(() => {
+    if (view === "checkout-recovery" && user?.role === "admin") loadCheckoutLocks();
+  }, [view, user?.role]);
+
   const updateComplaintStatus = async (complaint, status) => {
     const resolutionNote = String(complaintNotes[complaint.id] || complaint.resolutionNote || "").trim();
     if (["RESOLVED", "REFUND_ISSUED", "REJECTED"].includes(status) && resolutionNote.length < 5) {
