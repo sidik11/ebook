@@ -117,4 +117,74 @@ function claimFreeCouponRedemption(current, {
   return { ...effective, usedCount: used + 1, redemptions, reservations };
 }
 
-module.exports = { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
+
+/**
+ * Atomically converts a paid checkout's reservation into a recorded coupon
+ * redemption. If the reservation expired, a slot may be reclaimed only when
+ * the usage limit still has capacity. A captured payment must never silently
+ * overrun the coupon limit.
+ */
+function claimPaidCouponRedemption(current, {
+  userId, userKey, bookId, orderId, couponCode, expectedDiscountPercent, timestamp, hash
+}) {
+  // Fail closed: never recreate a deleted/missing coupon from a stale checkout
+  // snapshot. The caller primes the RTDB reference before starting the transaction.
+  if (!current || typeof current !== "object" || Array.isArray(current)) return;
+
+  const source = current;
+  const status = String(source.status ?? "ACTIVE").trim().toUpperCase();
+  if (status !== "ACTIVE") return;
+
+  const storedCode = String(source.code ?? "").trim().toUpperCase();
+  if (!couponCode || !/^[A-Z0-9]{12}$/.test(couponCode) || storedCode !== couponCode) return;
+
+  const rawExpiry = source.expiresAt ?? source.expiry ?? source.expires_at;
+  if (rawExpiry !== undefined && rawExpiry !== null && rawExpiry !== "") {
+    const parsedExpiry = timestampMs(rawExpiry);
+    // An invalid configured expiry must not silently become "never expires".
+    if (!parsedExpiry || parsedExpiry <= timestamp) return;
+  }
+
+  const percent = couponPercent(source);
+  if (percent < 5 || percent >= 100) return;
+  if (expectedDiscountPercent !== undefined && expectedDiscountPercent !== null &&
+      Number(expectedDiscountPercent) !== percent) return;
+
+  const rawMaxUses = source.maxUses ?? source.max_uses ?? source.usageLimit ??
+    source.usage_limit ?? source.maxRedemptions ?? source.totalUses;
+  const maxUses = Number(rawMaxUses);
+  if (!Number.isSafeInteger(maxUses) || maxUses < 1) return;
+
+  const redemptions = source.redemptions && typeof source.redemptions === "object"
+    ? { ...source.redemptions }
+    : {};
+  const previous = redemptions[userKey] || redemptions[userId];
+  if (previous) {
+    // An existing redemption makes retries idempotent only for the same book.
+    return previous.bookId === bookId ? source : undefined;
+  }
+
+  const reservations = source.reservations && typeof source.reservations === "object"
+    ? { ...source.reservations }
+    : {};
+  for (const [reservationKey, entryValue] of Object.entries(reservations)) {
+    const entry = entryValue && typeof entryValue === "object" ? entryValue : {};
+    const owner = reservationOwner(entry);
+    const expiry = reservationExpiryMs(entry);
+    const isOwn = owner === userId || owner === userKey || (owner && hash(owner) === userKey);
+    if (!owner || !expiry || expiry <= timestamp ||
+        (isOwn && entry.bookId === bookId) ||
+        (owner && (redemptions[owner] || redemptions[hash(owner)]))) {
+      delete reservations[reservationKey];
+    }
+  }
+
+  const used = recordedUses({ ...source, redemptions });
+  const held = liveReservations({ ...source, redemptions, reservations }, timestamp, userId, hash);
+  if (used + held >= maxUses) return;
+
+  redemptions[userKey] = { userId, bookId, orderId, redeemedAt: timestamp };
+  return { ...source, usedCount: used + 1, redemptions, reservations };
+}
+
+module.exports = { claimFreeCouponRedemption, claimPaidCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };

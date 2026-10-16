@@ -14,9 +14,14 @@ export async function compressCoverImage(file) {
   const TIMEOUT_MS = 20000;
   let sourceUrl = "";
   let bitmap;
+  let cancelActiveWorker = null;
 
   const withTimeout = (promise, ms) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Cover compression timed out. Try a smaller image or another browser.")), ms);
+    const timer = setTimeout(() => {
+      // Stop background CPU work immediately when the compression deadline wins.
+      try { cancelActiveWorker?.(); } catch {}
+      reject(new Error("Cover compression timed out. Try a smaller image or another browser."));
+    }, ms);
     promise.then(
       value => { clearTimeout(timer); resolve(value); },
       error => { clearTimeout(timer); reject(error); }
@@ -87,10 +92,23 @@ export async function compressCoverImage(file) {
           workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
           worker = new Worker(workerUrl);
           const result = await new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (callback, value) => {
+              if (settled) return;
+              settled = true;
+              cancelActiveWorker = null;
+              callback(value);
+            };
+            cancelActiveWorker = () => {
+              if (settled) return;
+              settled = true;
+              try { worker?.terminate(); } catch {}
+              reject(new Error("Cover compression timed out. Try a smaller image or another browser."));
+            };
             worker.onmessage = event => event.data?.ok
-              ? resolve(event.data)
-              : reject(new Error(event.data?.error || "Cover compression failed."));
-            worker.onerror = () => reject(new Error("Background cover compression failed."));
+              ? finish(resolve, event.data)
+              : finish(reject, new Error(event.data?.error || "Cover compression failed."));
+            worker.onerror = () => finish(reject, new Error("Background cover compression failed."));
             worker.postMessage({ file, maxBytes: COVER_OUTPUT_MAX_BYTES });
           });
           return result;
@@ -98,6 +116,7 @@ export async function compressCoverImage(file) {
           // Fall back for browsers whose worker canvas/WebP encoder is unsupported.
           if (workerError?.message?.includes("timed out")) throw workerError;
         } finally {
+          cancelActiveWorker = null;
           if (worker) worker.terminate();
           if (workerUrl) URL.revokeObjectURL(workerUrl);
         }
@@ -1384,6 +1403,10 @@ function Detail() {
                 ...response
               })
             });
+            if (verified.couponLimitExceeded) {
+              navigate(`/support?category=PAYMENT_ISSUE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(response.razorpay_order_id)}&paymentId=${encodeURIComponent(response.razorpay_payment_id)}&reason=coupon-limit-review`);
+              return;
+            }
             if (verified.duplicateCaptured) {
               navigate(`/support?category=DUPLICATE_CHARGE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(response.razorpay_order_id)}&paymentId=${encodeURIComponent(response.razorpay_payment_id)}`);
               return;

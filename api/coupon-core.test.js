@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs } = require("./coupon-core");
+const { claimFreeCouponRedemption, claimPaidCouponRedemption, couponPercent, discountPaise, timestampMs } = require("./coupon-core");
 
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const base = () => ({ code: "FREECOUPON01", discountPercent: 100, maxUses: 2, usedCount: 0, status: "ACTIVE", reservations: {}, redemptions: {} });
@@ -87,4 +87,180 @@ test("expired reservations do not block the final coupon use", () => {
   const next = claim(coupon, "user-a", "book-a");
   assert.ok(next);
   assert.equal(next.usedCount, 1);
+});
+
+
+test("paid coupon finalization atomically converts its reservation to one redemption", () => {
+  const partial = { ...base(), discountPercent: 25, maxUses: 1, reservations: {
+    [hash("user-a")]: { userId: "user-a", bookId: "book-a", expiresAt: 1_900_000_000_000 }
+  }};
+  const next = claimPaidCouponRedemption(partial, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_000, hash
+  });
+  assert.equal(next.usedCount, 1);
+  assert.equal(next.redemptions[hash("user-a")].orderId, "order-a");
+  assert.equal(Object.keys(next.reservations).length, 0);
+});
+
+test("paid coupon cannot exceed maxUses after its reservation expires and another user takes the slot", () => {
+  const partial = { ...base(), discountPercent: 25, maxUses: 1, usedCount: 1,
+    redemptions: { [hash("user-b")]: { userId: "user-b", bookId: "book-b" } },
+    reservations: {}
+  };
+  assert.equal(claimPaidCouponRedemption(partial, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_000, hash
+  }), undefined);
+});
+
+test("paid coupon finalization retry is idempotent for the same user and book", () => {
+  const partial = { ...base(), discountPercent: 25, maxUses: 1, reservations: {
+    [hash("user-a")]: { userId: "user-a", bookId: "book-a", expiresAt: 1_900_000_000_000 }
+  }};
+  const first = claimPaidCouponRedemption(partial, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_000, hash
+  });
+  const retry = claimPaidCouponRedemption(first, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_100, hash
+  });
+  assert.equal(retry.usedCount, 1);
+  assert.equal(Object.keys(retry.redemptions).length, 1);
+});
+
+
+test("paid coupon rejects missing, deleted, expired, invalid-expiry, and mismatched records", () => {
+  const args = {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_000, hash
+  };
+  assert.equal(claimPaidCouponRedemption(null, { ...args }), undefined);
+  assert.equal(claimPaidCouponRedemption(undefined, { ...args }), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), status: "DELETED", discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), expiresAt: 1_700_000_000_000, discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), expiresAt: "not-a-date", discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), code: "OTHERCOUPON1", discountPercent: 25 }, args), undefined);
+  assert.equal(claimPaidCouponRedemption({ ...base(), discountPercent: 100 }, args), undefined);
+});
+
+test("paid coupon must match the discount percentage saved on the checkout", () => {
+  const args = {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", couponCode: "FREECOUPON01",
+    expectedDiscountPercent: 25, timestamp: 1_800_000_000_000, hash
+  };
+  assert.equal(claimPaidCouponRedemption({ ...base(), discountPercent: 50 }, args), undefined);
+  const accepted = claimPaidCouponRedemption({ ...base(), discountPercent: 25 }, args);
+  assert.equal(accepted.usedCount, 1);
+});
+
+test("paid coupon refuses invalid max-use limits and does not overrun live reservations", () => {
+  const args = {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", couponCode: "FREECOUPON01",
+    timestamp: 1_800_000_000_000, hash
+  };
+  assert.equal(claimPaidCouponRedemption({ ...base(), discountPercent: 25, maxUses: 0 }, args), undefined);
+  const reserved = {
+    ...base(), discountPercent: 25, maxUses: 1,
+    reservations: { other: { userId: "user-b", bookId: "book-b", expiresAt: 1_900_000_000_000 } }
+  };
+  assert.equal(claimPaidCouponRedemption(reserved, args), undefined);
+});
+
+test("API imports the paid coupon helper used by payment finalization", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /claimPaidCouponRedemption\s*\}\s*=\s*require\(["']\.\/coupon-core["']\)/);
+  assert.match(apiSource, /claimPaidCouponRedemption\(current/);
+});
+
+test("zero-value order checkout uses the shared free-redemption transaction", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const routeStart = apiSource.indexOf('router.post("/orders/create"');
+  const routeEnd = apiSource.indexOf("async function finalizePayment", routeStart);
+  const route = apiSource.slice(routeStart, routeEnd);
+  const freeStart = route.indexOf("if (coupon && pricePaise === 0)");
+  const freeEnd = route.indexOf("// Recover an unpaid order", freeStart);
+  assert.ok(routeStart >= 0 && routeEnd > routeStart && freeStart >= 0 && freeEnd > freeStart);
+  const freeCheckout = route.slice(freeStart, freeEnd);
+  assert.match(freeCheckout, /claimFreeCouponRedemption\(current/);
+  assert.doesNotMatch(freeCheckout, /usedCount\s*:\s*Number/);
+});
+
+test("paid coupon reservation primes the same Firebase reference before transaction", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const routeStart = apiSource.indexOf('router.post("/orders/create"');
+  const routeEnd = apiSource.indexOf("async function finalizePayment", routeStart);
+  const route = apiSource.slice(routeStart, routeEnd);
+  const prime = route.indexOf('await couponRef.once("value")');
+  const transaction = route.indexOf("couponRef.transaction(current =>");
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.ok(prime >= 0 && transaction > prime, "read the current coupon before starting the reservation transaction");
+  assert.match(route.slice(prime, transaction), /if \(!latestCoupon/);
+});
+
+
+test("free checkout does not overwrite an existing purchase in an unknown state", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const routeStart = apiSource.indexOf('router.post("/orders/create"');
+  const routeEnd = apiSource.indexOf("async function finalizePayment", routeStart);
+  const route = apiSource.slice(routeStart, routeEnd);
+  const guard = route.indexOf("if (current) return;");
+  const pending = route.indexOf('current?.status === "PENDING_COUPON"', route.indexOf("if (coupon && pricePaise === 0)"));
+  assert.ok(guard > pending, "existing non-paid purchase states must be preserved");
+});
+
+test("paid reservation canonicalizes legacy max-use and discount fields", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /current\.maxUses \?\? current\.max_uses \?\? current\.usageLimit/);
+  assert.match(apiSource, /current\.discountPercent \?\? current\.discount_percentage \?\? current\.percentage/);
+});
+
+test("coupon-limit payment finalization attempts a full refund and records the outcome", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /razorpay\.payments\.refund\(paymentId,\s*\{/);
+  assert.match(apiSource, /refundStatus.*REFUND_INITIATED/s);
+  assert.match(apiSource, /refundInitiated: Boolean\(finalization\.refundInitiated\)/);
+});
+
+test("paid coupon reservation retries one transient abort after refreshing active coupon data", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /const reserveCoupon = \(\) => couponRef\.transaction/);
+  assert.match(apiSource, /const retrySnapshot = await couponRef\.once\("value"\)/);
+  assert.match(apiSource, /couponStatus\(retryCoupon\) === "ACTIVE" && !couponExpiryIsPast\(retryCoupon\)/);
+});
+
+
+test("paid checkout refuses to reserve a coupon after its discount changes", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /const appliedDiscountPercent = couponPercent\(coupon\)/);
+  assert.match(apiSource, /couponPercent\(effective\) !== appliedDiscountPercent/);
+});
+
+
+test("coupon-limit refund has an atomic claim to avoid duplicate gateway refunds", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /const refundClaim = await db\.ref\(eventPath\)\.transaction\(current => current \|\| reviewEvent\)/);
+  assert.match(apiSource, /if \(!refundClaim\.committed\)/);
 });

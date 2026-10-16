@@ -8,7 +8,7 @@ const Razorpay = require("razorpay");
 const { google } = require("googleapis");
 const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-const { claimFreeCouponRedemption } = require("./coupon-core");
+const { claimFreeCouponRedemption, claimPaidCouponRedemption } = require("./coupon-core");
 
 // Load local .env if present
 function loadEnv() {
@@ -1572,11 +1572,17 @@ router.put("/admin/featured-books", async (req, res) => {
   }
 });
 
+let adminAnalyticsCache = null;
+let adminAnalyticsCacheExpiresAt = 0;
+
 router.get("/admin/analytics", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
+    if (adminAnalyticsCache && adminAnalyticsCacheExpiresAt > now()) {
+      return res.json(adminAnalyticsCache);
+    }
 
     const db = requireDb();
     const [usersSnap, booksSnap, ordersSnap, purchasesSnap] = await Promise.all([
@@ -1671,7 +1677,7 @@ router.get("/admin/analytics", async (req, res) => {
         };
       });
 
-    res.json({
+    const analyticsPayload = {
       ok: true,
       overview: {
         totalUsers,
@@ -1697,7 +1703,10 @@ router.get("/admin/analytics", async (req, res) => {
       dailyRevenue,
       topBooks,
       recentOrders
-    });
+    };
+    adminAnalyticsCache = analyticsPayload;
+    adminAnalyticsCacheExpiresAt = now() + 15000;
+    res.json(analyticsPayload);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load administrator analytics" });
   }
@@ -2433,18 +2442,34 @@ router.post("/orders/create", async (req, res) => {
       pricePaise = Math.max(0, basePricePaise - Math.round(discountRupees * 100));
       if (discountRupees <= 0) return res.status(400).json({ error: "This coupon is not valid for this purchase." });
       const reservationKey = hash(auth.userId);
-      const couponTx = await requireDb().ref("coupons/" + couponCode).transaction(current => {
+      const couponRef = requireDb().ref("coupons/" + couponCode);
+      // Prime this exact RTDB reference immediately before the transaction.
+      // RTDB may invoke a transaction updater with null when its local cache
+      // is cold; the checkout must not abort just because that initial cache
+      // value is unavailable. The updater below still fails closed on null,
+      // so a deleted coupon can never be recreated from the earlier snapshot.
+      const latestCouponSnapshot = await couponRef.once("value");
+      const latestCoupon = latestCouponSnapshot.val();
+      if (!latestCoupon || couponStatus(latestCoupon) !== "ACTIVE" || couponExpiryIsPast(latestCoupon)) {
+        return res.status(400).json({ error: "This coupon is inactive or expired. Please apply it again." });
+      }
+      coupon = latestCoupon;
+      // The order amount is already calculated. Do not reserve a coupon whose
+      // discount changed between validation and reservation.
+      const appliedDiscountPercent = couponPercent(coupon);
+      const reserveCoupon = () => couponRef.transaction(current => {
         if (!current || couponStatus(current) !== "ACTIVE" || couponExpiryIsPast(current)) return;
         const effective = {
           ...coupon,
           ...current,
-          discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? current.discount ?? coupon.discountPercent,
-          maxUses: current.maxUses ?? coupon.maxUses,
-          usedCount: current.usedCount ?? coupon.usedCount ?? 0,
+          discountPercent: current.discountPercent ?? current.discount_percentage ?? current.percentage ?? current.discount ?? coupon.discountPercent ?? coupon.discount_percentage ?? coupon.percentage ?? coupon.discount,
+          maxUses: current.maxUses ?? current.max_uses ?? current.usageLimit ?? current.usage_limit ?? current.maxRedemptions ?? current.totalUses ?? coupon.maxUses ?? coupon.max_uses ?? coupon.usageLimit ?? coupon.usage_limit ?? coupon.maxRedemptions ?? coupon.totalUses,
+          usedCount: current.usedCount ?? current.usesCount ?? current.redeemedCount ?? coupon.usedCount ?? coupon.usesCount ?? coupon.redeemedCount ?? 0,
           status: current.status ?? coupon.status ?? "ACTIVE",
-          expiresAt: current.expiresAt ?? coupon.expiresAt ?? null
+          expiresAt: current.expiresAt ?? current.expiry ?? current.expires_at ?? coupon.expiresAt ?? coupon.expiry ?? coupon.expires_at ?? null
         };
         if (couponStatus(effective) !== "ACTIVE" || couponExpiryIsPast(effective)) return;
+        if (couponPercent(effective) !== appliedDiscountPercent) return;
         const reservations = { ...(effective.reservations || {}) };
         const currentTime = now();
         let ownReservation = null;
@@ -2463,7 +2488,13 @@ router.post("/orders/create", async (req, res) => {
         const activeOtherReservations = couponLiveReservations({ ...effective, reservations }, currentTime, auth.userId);
         const recordedUses = couponRecordedUses(effective);
         const maxUses = Number(effective.maxUses || 0);
-        if (!ownReservation && (!Number.isInteger(maxUses) || maxUses < 1 || recordedUses + activeOtherReservations >= maxUses)) return;
+        if (!Number.isSafeInteger(maxUses) || maxUses < 1 || recordedUses + activeOtherReservations >= maxUses) {
+          if (ownReservation) {
+            reservations[reservationKey] = ownReservation;
+            return { ...effective, reservations };
+          }
+          return;
+        }
         reservations[reservationKey] = {
           userId: auth.userId,
           bookId,
@@ -2471,6 +2502,18 @@ router.post("/orders/create", async (req, res) => {
         };
         return { ...effective, reservations };
       });
+      let couponTx = await reserveCoupon();
+      if (!couponTx.committed) {
+        // A cold Firebase transaction cache or a concurrent write can abort the
+        // first attempt. Re-read the authoritative record and retry once only
+        // while the coupon still exists and is active; never recreate deleted coupons.
+        const retrySnapshot = await couponRef.once("value");
+        const retryCoupon = retrySnapshot.val();
+        if (retryCoupon && couponStatus(retryCoupon) === "ACTIVE" && !couponExpiryIsPast(retryCoupon)) {
+          coupon = retryCoupon;
+          couponTx = await reserveCoupon();
+        }
+      }
       if (!couponTx.committed) {
         // Distinguish a truly exhausted coupon from a concurrent request that
         // already created this user's reservation for the same book.
@@ -2483,7 +2526,7 @@ router.post("/orders/create", async (req, res) => {
             couponReservationExpiryMs(entry) > now();
         });
         if (!sameUserReservation) {
-          const maxUses = Number(latest.maxUses || coupon?.maxUses || 0);
+          const maxUses = Number(latest.maxUses ?? latest.max_uses ?? latest.usageLimit ?? latest.usage_limit ?? latest.maxRedemptions ?? latest.totalUses ?? coupon?.maxUses ?? coupon?.max_uses ?? coupon?.usageLimit ?? coupon?.usage_limit ?? coupon?.maxRedemptions ?? coupon?.totalUses ?? 0);
           const recordedUses = couponRecordedUses(latest);
           const activeReservations = couponLiveReservations(latest, now(), auth.userId);
           if (recordedUses >= maxUses) {
@@ -2492,42 +2535,110 @@ router.post("/orders/create", async (req, res) => {
           if (activeReservations > 0) {
             return res.status(409).json({ error: "This coupon is temporarily held by another checkout. Please retry after that checkout expires.", diagnostics: { configuredMaxUses: maxUses, recordedUses, activeReservations } });
           }
-          return res.status(503).json({ error: "Coupon checkout was interrupted by a concurrent update. Please retry." });
+          // Include safe, non-sensitive transaction diagnostics so a genuine
+          // RTDB abort can be distinguished from an exhausted coupon or a
+          // deleted/changed record. Do not expose user IDs or reservation keys.
+          return res.status(503).json({
+            error: "Coupon checkout was interrupted by a concurrent update. Please retry.",
+            diagnostics: {
+              transactionCommitted: Boolean(couponTx.committed),
+              couponRecordPresent: Boolean(couponTx.snapshot?.exists?.()),
+              configuredMaxUses: maxUses,
+              recordedUses,
+              activeReservations,
+              ownReservationPresent: false
+            }
+          });
         }
       }
     }
     const purchase = await owned(auth.userId, bookId);
 
     // A 100% coupon grants access without sending a zero-value order to Razorpay.
+    // Use the same atomic redemption helper as /coupons/redeem-free so the
+    // coupon usage counter and redemption ledger cannot drift apart.
     if (coupon && pricePaise === 0) {
       const db = requireDb();
+      const userKey = hash(auth.userId);
       const purchaseId = hash(auth.userId + ":" + bookId);
-      const orderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
-      const purchaseTx = await db.ref("purchases/" + purchaseId).transaction(current => {
+      const proposedOrderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
+      const purchaseRef = db.ref("purchases/" + purchaseId);
+      const purchaseTx = await purchaseRef.transaction(current => {
         if (current?.status === "PAID") return;
-        return { userId: auth.userId, bookId, orderId, paymentId: "", amount: 0, amountPaise: 0, status: "PAID", purchasedAt: now(), couponCode, originalAmount: Number(book.price || 0), discount: discountRupees };
-      });
-      if (!purchaseTx.committed) {
-        await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId)).remove();
-        const currentPurchase = purchaseTx.snapshot.val();
-        if (currentPurchase?.status === "PAID" && currentPurchase.userId === auth.userId && currentPurchase.bookId === bookId) {
-          return res.json({ free: true, alreadyOwned: true, bookId });
-        }
-        return res.status(409).json({ error: "This ebook has already been purchased." });
-      }
-      const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => {
+        if (current?.status === "PENDING_COUPON" &&
+            current.userId === auth.userId && current.bookId === bookId &&
+            current.couponCode === couponCode) return current;
+        // Never overwrite an existing purchase in an unknown/intermediate state.
+        // Doing so could replace another order or discard a payment record.
         if (current) return;
-        return { userId: auth.userId, bookId, orderId, discount: discountRupees, originalAmount: Number(book.price || 0), paidAmount: 0, usedAt: now() };
+        return {
+          userId: auth.userId, bookId, orderId: proposedOrderId, paymentId: "",
+          amount: 0, amountPaise: 0, status: "PENDING_COUPON",
+          createdAt: now(), couponCode, originalAmount: Number(book.price || 0),
+          discount: discountRupees
+        };
       });
-      await db.ref("coupons/" + couponCode).transaction(current => {
-        if (!current) return;
-        const reservations = current.reservations || {};
-        delete reservations[hash(auth.userId)];
-        return { ...current, usedCount: Number(current.usedCount || 0) + (useTx.committed ? 1 : 0), reservations };
+      const pendingPurchase = purchaseTx.snapshot?.val();
+      if (pendingPurchase?.status === "PAID") {
+        await db.ref("coupons/" + couponCode + "/reservations/" + userKey).remove();
+        return res.json({ free: true, alreadyOwned: true, bookId });
+      }
+      if (!pendingPurchase || pendingPurchase.userId !== auth.userId ||
+          pendingPurchase.bookId !== bookId || pendingPurchase.status !== "PENDING_COUPON" ||
+          pendingPurchase.couponCode !== couponCode) {
+        await db.ref("coupons/" + couponCode + "/reservations/" + userKey).remove();
+        return res.status(409).json({ error: "This ebook has already been purchased or is being finalized." });
+      }
+
+      const orderId = pendingPurchase.orderId || proposedOrderId;
+      const redemptionTime = now();
+      const redemptionTx = await db.ref("coupons/" + couponCode).transaction(current =>
+        claimFreeCouponRedemption(current, {
+          configuredCoupon: coupon, userId: auth.userId, userKey, bookId,
+          pricePaise: basePricePaise, timestamp: redemptionTime, hash
+        })
+      );
+      const redeemedCoupon = redemptionTx.snapshot?.val() || {};
+      const existingRedemption = (redeemedCoupon.redemptions || {})[userKey];
+      const redemptionAccepted = redemptionTx.committed || existingRedemption?.bookId === bookId;
+      if (!redemptionAccepted) {
+        await purchaseRef.transaction(current =>
+          current?.status === "PENDING_COUPON" && current.orderId === orderId ? null : undefined
+        );
+        await db.ref("coupons/" + couponCode + "/reservations/" + userKey).remove();
+        const maxUses = Number(redeemedCoupon.maxUses ?? redeemedCoupon.max_uses ?? coupon.maxUses ?? 0);
+        const used = Number(redeemedCoupon.usedCount ?? redeemedCoupon.usesCount ?? redeemedCoupon.redeemedCount ?? 0);
+        if (Number.isFinite(maxUses) && maxUses > 0 && used >= maxUses) {
+          return res.status(409).json({ error: "This coupon has reached its usage limit." });
+        }
+        return res.status(409).json({ error: "This coupon could not be redeemed safely. Please retry." });
+      }
+
+      const paidPurchaseTx = await purchaseRef.transaction(current => {
+        if (current?.status === "PAID") return;
+        if (current?.status !== "PENDING_COUPON" || current.orderId !== orderId ||
+            current.userId !== auth.userId || current.bookId !== bookId) return;
+        return { ...current, status: "PAID", purchasedAt: now() };
       });
-      await set("orders/" + orderId, { userId: auth.userId, bookId, amountPaise: 0, amount: 0, originalAmount: Number(book.price || 0), discount: discountRupees, couponCode, status: "PAID", createdAt: now(), updatedAt: now(), razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON" });
+      const finalPurchase = paidPurchaseTx.snapshot?.val();
+      if (!finalPurchase || finalPurchase.status !== "PAID" ||
+          finalPurchase.userId !== auth.userId || finalPurchase.bookId !== bookId) {
+        return res.status(503).json({ error: "Coupon redeemed but library access is still being finalized. Retry this same coupon for this ebook." });
+      }
+
+      await db.ref("couponUses/" + couponCode + "/" + userKey).transaction(current => current || {
+        userId: auth.userId, bookId, orderId, discount: discountRupees,
+        originalAmount: Number(book.price || 0), paidAmount: 0,
+        usedAt: finalPurchase.purchasedAt || now()
+      });
+      await set("orders/" + orderId, {
+        userId: auth.userId, bookId, amountPaise: 0, amount: 0,
+        originalAmount: Number(book.price || 0), discount: discountRupees,
+        couponCode, status: "PAID", createdAt: finalPurchase.purchasedAt || now(),
+        updatedAt: now(), razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON"
+      });
       await audit("COUPON_REDEEMED_FREE_PURCHASE", auth, { code: couponCode, bookId, orderId });
-      return res.json({ free: true, order_id: orderId, couponCode, discount: discountRupees });
+      return res.set("Cache-Control", "no-store").json({ free: true, order_id: orderId, couponCode, discount: discountRupees });
     }
 
     // Recover an unpaid order if the customer closed checkout or the lock expired.
@@ -2567,6 +2678,7 @@ router.post("/orders/create", async (req, res) => {
     await set("orders/" + order.id, {
       userId: auth.userId, bookId, amountPaise: order.amount, amount: Number((order.amount / 100).toFixed(2)),
       originalAmount: Number(book.price), discount: discountRupees, couponCode: coupon ? couponCode : "",
+      ...(coupon ? { couponDiscountPercent: couponPercent(coupon) } : {}),
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
     await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
@@ -2597,6 +2709,90 @@ async function finalizePayment(paymentId, orderId) {
   const priorEvent = await get(eventPath);
   if (priorEvent?.status === "PROCESSED") return { alreadyProcessed: true };
   if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
+  if (priorEvent?.status === "COUPON_LIMIT_REVIEW") return {
+    alreadyProcessed: true,
+    couponLimitExceeded: true,
+    refundInitiated: priorEvent.refundStatus === "REFUND_INITIATED"
+  };
+
+  // Convert the checkout reservation into a coupon redemption before granting
+  // access. If another checkout consumed the final slot after this reservation
+  // expired, preserve the captured-payment record and flag it for refund review
+  // instead of silently granting a discount beyond maxUses.
+  if (order.couponCode) {
+    const code = normalizeCouponCode(order.couponCode);
+    const userKey = hash(order.userId);
+    const couponRef = db.ref("coupons/" + code);
+    // Prime the RTDB reference before its transaction updater runs. The helper
+    // itself fails closed on null, deleted, expired, or mismatched coupon data.
+    const couponSnapshot = await couponRef.once("value");
+    const currentCoupon = couponSnapshot.val();
+    const couponTx = currentCoupon
+      ? await couponRef.transaction(current =>
+          claimPaidCouponRedemption(current, {
+            userId: order.userId,
+            userKey,
+            bookId: order.bookId,
+            orderId,
+            couponCode: code,
+            expectedDiscountPercent: order.couponDiscountPercent,
+            timestamp: now(),
+            hash
+          })
+        )
+      : { committed: false, snapshot: couponSnapshot };
+    const latestCoupon = couponTx.snapshot?.val() || {};
+    const priorRedemption = (latestCoupon.redemptions || {})[userKey];
+    if (!couponTx.committed && priorRedemption?.bookId !== order.bookId) {
+      // Claim the refund attempt atomically. Browser verification and the
+      // Razorpay webhook can arrive together; only one may call the refund API.
+      // If the call times out, leave the claim for manual reconciliation rather
+      // than risking a duplicate refund on a retry.
+      const reviewEvent = {
+        status: "COUPON_LIMIT_REVIEW",
+        orderId, userId: order.userId, bookId: order.bookId,
+        paymentId, processedAt: now(), refundStatus: "REFUND_REQUESTED",
+        reason: "Coupon reservation expired or usage limit was consumed before payment finalization."
+      };
+      const refundClaim = await db.ref(eventPath).transaction(current => current || reviewEvent);
+      if (!refundClaim.committed) {
+        const claimedEvent = refundClaim.snapshot?.val() || {};
+        return {
+          alreadyProcessed: true,
+          couponLimitExceeded: true,
+          refundInitiated: claimedEvent.refundStatus === "REFUND_INITIATED"
+        };
+      }
+      await db.ref().update({
+        ["orders/" + orderId + "/status"]: "COUPON_LIMIT_REVIEW",
+        ["orders/" + orderId + "/paymentId"]: paymentId,
+        ["orders/" + orderId + "/updatedAt"]: now(),
+        ["orders/" + orderId + "/refundStatus"]: "REFUND_REQUESTED",
+        ["checkoutLocks/" + hash(order.userId + ":" + order.bookId) + "/status"]: "COUPON_LIMIT_REVIEW",
+        ["checkoutLocks/" + hash(order.userId + ":" + order.bookId) + "/updatedAt"]: now()
+      });
+      let refundInitiated = false;
+      try {
+        const refund = await razorpay.payments.refund(paymentId, {
+          amount: Number(payment.amount),
+          notes: { reason: "coupon_limit_exceeded", orderId }
+        });
+        refundInitiated = Boolean(refund?.id);
+        if (refundInitiated) {
+          await db.ref().update({
+            ["orders/" + orderId + "/refundStatus"]: "REFUND_INITIATED",
+            ["orders/" + orderId + "/refundId"]: refund.id,
+            ["orders/" + orderId + "/updatedAt"]: now(),
+            ["paymentEvents/" + paymentId + "/refundStatus"]: "REFUND_INITIATED",
+            ["paymentEvents/" + paymentId + "/refundId"]: refund.id
+          });
+        }
+      } catch (refundError) {
+        console.error("Coupon-limit refund could not be initiated; manual review is required:", refundError.message);
+      }
+      return { alreadyProcessed: false, couponLimitExceeded: true, refundInitiated };
+    }
+  }
 
   // The purchase record is the single atomic entitlement gate. Only one
   // captured payment can claim it; parallel webhook/browser callbacks cannot
@@ -2631,25 +2827,27 @@ async function finalizePayment(paymentId, orderId) {
   if (!duplicateCaptured && order.couponCode) {
     const code = normalizeCouponCode(order.couponCode);
     const usePath = "couponUses/" + code + "/" + hash(order.userId);
-    const useTx = await db.ref(usePath).transaction(current => {
-      if (current) return;
-      return { userId: order.userId, bookId: order.bookId, orderId, discount: Number(order.discount || 0), originalAmount: Number(order.originalAmount || order.amount), paidAmount: Number(order.amount || 0), usedAt: now() };
+    await db.ref(usePath).transaction(current => current || {
+      userId: order.userId, bookId: order.bookId, orderId,
+      discount: Number(order.discount || 0),
+      originalAmount: Number(order.originalAmount || order.amount),
+      paidAmount: Number(order.amount || 0), usedAt: now()
     });
-    if (useTx.committed) {
-      await db.ref("coupons/" + code).transaction(current => {
-        if (!current) return;
-        const reservations = { ...(current.reservations || {}) };
-        const userKey = hash(order.userId);
-        for (const [reservationId, entry] of Object.entries(reservations)) {
-          const owner = couponReservationOwner(entry);
-          if (owner === order.userId || owner === userKey ||
-              (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
-            delete reservations[reservationId];
-          }
+    // Usage was atomically counted in claimPaidCouponRedemption above. Only
+    // remove any stale reservation here; never increment usedCount twice.
+    await db.ref("coupons/" + code).transaction(current => {
+      if (!current) return;
+      const reservations = { ...(current.reservations || {}) };
+      const userKey = hash(order.userId);
+      for (const [reservationId, entry] of Object.entries(reservations)) {
+        const owner = couponReservationOwner(entry);
+        if (owner === order.userId || owner === userKey ||
+            (entry?.bookId === order.bookId && owner && hash(owner) === userKey)) {
+          delete reservations[reservationId];
         }
-        return { ...current, usedCount: Number(current.usedCount || 0) + 1, reservations };
-      });
-    }
+      }
+      return { ...current, reservations };
+    });
   } else if (order.couponCode) {
     await db.ref("coupons/" + normalizeCouponCode(order.couponCode) + "/reservations/" + hash(order.userId)).remove();
   }
@@ -2679,9 +2877,15 @@ router.post("/orders/verify", async (req, res) => {
     res.json({
       ok: true,
       duplicateCaptured: Boolean(finalization.duplicateCaptured),
-      message: finalization.duplicateCaptured
-        ? "This payment was captured but another payment already unlocked the book. The extra charge has been flagged for refund review."
-        : "Payment verified successfully."
+      couponLimitExceeded: Boolean(finalization.couponLimitExceeded),
+      refundInitiated: Boolean(finalization.refundInitiated),
+      message: finalization.couponLimitExceeded
+        ? (finalization.refundInitiated
+          ? "Payment was captured, but the coupon limit was reached. A full refund has been initiated; ebook access has not been granted."
+          : "Payment was captured, but the coupon limit was reached. Refund review is required; ebook access has not been granted.")
+        : finalization.duplicateCaptured
+          ? "This payment was captured but another payment already unlocked the book. The extra charge has been flagged for refund review."
+          : "Payment verified successfully."
     });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Payment verification failed" });
@@ -2821,9 +3025,14 @@ router.get("/library", async (req, res) => {
       if (b.data.type === "FREE" || Number(b.data.price || 0) === 0) ids.add(b.id);
     });
     const books = [];
-    for (const id of ids) {
-      const b = await get("books/" + id);
-      if (b && b.status === "ACTIVE") books.push(await publicBook(id, b));
+    const libraryIds = [...ids];
+    // Bound concurrency to reduce N+1 latency without flooding RTDB.
+    for (let offset = 0; offset < libraryIds.length; offset += 20) {
+      const batch = await Promise.all(libraryIds.slice(offset, offset + 20).map(async id => {
+        const b = await get("books/" + id);
+        return b && b.status === "ACTIVE" ? publicBook(id, b) : null;
+      }));
+      books.push(...batch.filter(Boolean));
     }
     res.json({ books });
   } catch (e) {
