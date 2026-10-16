@@ -1924,6 +1924,72 @@ router.patch("/admin/complaints/:id", async (req, res) => {
   }
 });
 
+
+// Expire abandoned checkout attempts after two minutes. The endpoint is called
+// by Vercel Cron; payment state is checked with Razorpay before any order is
+// marked cancelled, so a captured payment is never silently discarded.
+router.get("/cron/expire-orders", async (req, res) => {
+  const secret = String(process.env.CRON_SECRET || "");
+  const authHeader = String(req.headers.authorization || "");
+  if (!secret || authHeader !== "Bearer " + secret) {
+    return res.status(401).json({ error: "Unauthorized cron request." });
+  }
+  try {
+    const db = requireDb();
+    const snapshot = await db.ref("orders").once("value");
+    const cutoff = now() - 2 * 60 * 1000;
+    const razorpay = getRazorpay();
+    let expired = 0, skipped = 0;
+    const tasks = [];
+    snapshot.forEach(child => {
+      const order = child.val();
+      if (!order || !["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) return;
+      const createdAt = Number(order.createdAt || 0);
+      if (!createdAt || createdAt > cutoff || order.paymentId || order.razorpayPaymentId || order.paymentCapturedAt || order.paidAt) return;
+      tasks.push((async () => {
+        try {
+          const providerId = String(order.razorpayOrderId || child.key);
+          const providerOrder = await razorpay.orders.fetch(providerId);
+          if (!providerOrder || providerOrder.status === "paid") { skipped++; return; }
+          const tx = await db.ref("orders/" + key(child.key)).transaction(current => {
+            if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+            if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+            if (Number(current.createdAt || 0) > cutoff) return;
+            return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
+          });
+          if (!tx.committed) { skipped++; return; }
+          const finalOrder = tx.snapshot?.val() || {};
+          const lockId = hash(String(finalOrder.userId || finalOrder.uid || "") + ":" + String(finalOrder.bookId || finalOrder.book || ""));
+          await db.ref("checkoutLocks/" + lockId).transaction(current => {
+            if (!current || String(current.orderId || "") !== providerId) return;
+            return null;
+          });
+          const couponCode = normalizeCouponCode(finalOrder.couponCode || "");
+          const userId = String(finalOrder.userId || finalOrder.uid || "");
+          if (couponCode && userId) {
+            await db.ref("coupons/" + couponCode + "/reservations").transaction(current => {
+              if (!current || typeof current !== "object") return current;
+              const next = { ...current };
+              for (const [reservationId, entry] of Object.entries(next)) {
+                if (String(entry?.orderId || "") === providerId || couponReservationOwner(entry) === userId || couponReservationOwner(entry) === hash(userId)) delete next[reservationId];
+              }
+              return next;
+            });
+          }
+          expired++;
+        } catch (error) {
+          console.error("Abandoned order expiry failed:", child.key, error.message);
+          skipped++;
+        }
+      })());
+    });
+    await Promise.all(tasks);
+    res.set("Cache-Control", "no-store").json({ ok: true, expired, skipped, cutoff });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : "Could not expire abandoned orders." });
+  }
+});
+
 router.get("/admin/orders", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
@@ -2826,7 +2892,7 @@ async function finalizePayment(paymentId, orderId) {
   const payment = await razorpay.payments.fetch(paymentId);
   const order = await get("orders/" + orderId);
   if (!order) fail(404, "Order not found");
-  if (order.status === "SUPERSEDED") {
+  if (["SUPERSEDED", "CANCELLED"].includes(String(order.status || "").toUpperCase())) {
     if (payment.order_id === orderId && payment.status === "captured" && Number(payment.amount) === Number(order.amountPaise)) {
       await requireDb().ref("orders/" + orderId).update({
         refundStatus: "REVIEW_REQUIRED", capturedAfterSupersededAt: now(),
