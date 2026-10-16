@@ -129,3 +129,27 @@ test("paid coupon finalization retry is idempotent for the same user and book", 
   assert.equal(retry.usedCount, 1);
   assert.equal(Object.keys(retry.redemptions).length, 1);
 });
+
+
+test("API imports the paid coupon helper used by payment finalization", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(apiSource, /claimPaidCouponRedemption\\s*\\}\\s*=\\s*require\\(["']\\.\\/coupon-core["']\\)/);
+  assert.match(apiSource, /claimPaidCouponRedemption\\(current/);
+});
+
+test("zero-value order checkout uses the shared free-redemption transaction", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const routeStart = apiSource.indexOf('router.post("/orders/create"');
+  const routeEnd = apiSource.indexOf("async function finalizePayment", routeStart);
+  const route = apiSource.slice(routeStart, routeEnd);
+  const freeStart = route.indexOf("if (coupon && pricePaise === 0)");
+  const freeEnd = route.indexOf("// Recover an unpaid order", freeStart);
+  assert.ok(routeStart >= 0 && routeEnd > routeStart && freeStart >= 0 && freeEnd > freeStart);
+  const freeCheckout = route.slice(freeStart, freeEnd);
+  assert.match(freeCheckout, /claimFreeCouponRedemption\\(current/);
+  assert.doesNotMatch(freeCheckout, /usedCount\\s*:\\s*Number/);
+});
