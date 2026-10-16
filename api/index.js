@@ -2729,7 +2729,7 @@ router.post("/orders/create", async (req, res) => {
         reservations[reservationKey] = {
           userId: auth.userId,
           bookId,
-          expiresAt: Math.max(couponReservationExpiryMs(ownReservation), currentTime + 30 * 60 * 1000)
+          expiresAt: Math.max(couponReservationExpiryMs(ownReservation), currentTime + 2 * 60 * 1000)
         };
         return { ...effective, reservations };
       });
@@ -2830,7 +2830,7 @@ router.post("/orders/create", async (req, res) => {
         const orderMatchesRequestedPrice = Number(existingOrder.amountPaise) === Number(pricePaise) &&
           existingCouponCode === requestedCouponCode;
         if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise) && orderMatchesRequestedPrice) {
-          await update(lockPath, { status: "CREATED", updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
+          await update(lockPath, { status: "CREATED", updatedAt: now(), expiresAt: now() + 2 * 60 * 1000 });
           return res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: providerOrder.id, amount: providerOrder.amount, currency: providerOrder.currency, name: "MS Tech EBook", description: book.title, couponCode: requestedCouponCode, discount: discountRupees, recovered: true });
         }
         if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise) && !orderMatchesRequestedPrice) {
@@ -2843,7 +2843,7 @@ router.post("/orders/create", async (req, res) => {
             if (current?.orderId !== existingLock.orderId ||
                 Number(current?.expiresAt || 0) > now() ||
                 current?.status === "PAID") return;
-            return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 30 * 60 * 1000 };
+            return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 2 * 60 * 1000 };
           });
           if (!replaceLock.committed) {
             return res.status(409).json({ error: "Your previous checkout is still being reconciled. Please retry shortly." });
@@ -2858,7 +2858,7 @@ router.post("/orders/create", async (req, res) => {
       if (current && Number(current.expiresAt || 0) > now()) return;
       // A stale lock linked to an unresolved order must be recovered, not replaced.
       if (current?.orderId && current.status !== "PAID") return;
-      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 30 * 60 * 1000 };
+      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 2 * 60 * 1000 };
     });
     if (!lockTx.committed) {
       return res.status(409).json({ error: "An earlier checkout is unresolved. Retry to resume it, or contact support if payment may already have been taken." });
@@ -2875,7 +2875,7 @@ router.post("/orders/create", async (req, res) => {
       originalAmount: Number(book.price), discount: discountRupees, couponCode: coupon ? couponCode : "",
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
-    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
+    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 2 * 60 * 1000 });
     res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title, couponCode: coupon ? couponCode : "", discount: discountRupees });
   } catch (e) {
     if (lockPath && lockToken) {
