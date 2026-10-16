@@ -2519,7 +2519,8 @@ router.post("/orders/create", async (req, res) => {
       const purchaseTx = await purchaseRef.transaction(current => {
         if (current?.status === "PAID") return;
         if (current?.status === "PENDING_COUPON" &&
-            current.userId === auth.userId && current.bookId === bookId) return current;
+            current.userId === auth.userId && current.bookId === bookId &&
+            current.couponCode === couponCode) return current;
         return {
           userId: auth.userId, bookId, orderId: proposedOrderId, paymentId: "",
           amount: 0, amountPaise: 0, status: "PENDING_COUPON",
@@ -2533,7 +2534,8 @@ router.post("/orders/create", async (req, res) => {
         return res.json({ free: true, alreadyOwned: true, bookId });
       }
       if (!pendingPurchase || pendingPurchase.userId !== auth.userId ||
-          pendingPurchase.bookId !== bookId || pendingPurchase.status !== "PENDING_COUPON") {
+          pendingPurchase.bookId !== bookId || pendingPurchase.status !== "PENDING_COUPON" ||
+          pendingPurchase.couponCode !== couponCode) {
         await db.ref("coupons/" + couponCode + "/reservations/" + userKey).remove();
         return res.status(409).json({ error: "This ebook has already been purchased or is being finalized." });
       }
