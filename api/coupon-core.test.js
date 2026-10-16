@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs } = require("./coupon-core");
+const { claimFreeCouponRedemption, claimPaidCouponRedemption, couponPercent, discountPaise, timestampMs } = require("./coupon-core");
 
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const base = () => ({ code: "FREECOUPON01", discountPercent: 100, maxUses: 2, usedCount: 0, status: "ACTIVE", reservations: {}, redemptions: {} });
@@ -87,4 +87,45 @@ test("expired reservations do not block the final coupon use", () => {
   const next = claim(coupon, "user-a", "book-a");
   assert.ok(next);
   assert.equal(next.usedCount, 1);
+});
+
+
+test("paid coupon finalization atomically converts its reservation to one redemption", () => {
+  const partial = { ...base(), discountPercent: 25, maxUses: 1, reservations: {
+    [hash("user-a")]: { userId: "user-a", bookId: "book-a", expiresAt: 1_900_000_000_000 }
+  }};
+  const next = claimPaidCouponRedemption(partial, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    timestamp: 1_800_000_000_000, hash
+  });
+  assert.equal(next.usedCount, 1);
+  assert.equal(next.redemptions[hash("user-a")].orderId, "order-a");
+  assert.equal(Object.keys(next.reservations).length, 0);
+});
+
+test("paid coupon cannot exceed maxUses after its reservation expires and another user takes the slot", () => {
+  const partial = { ...base(), discountPercent: 25, maxUses: 1, usedCount: 1,
+    redemptions: { [hash("user-b")]: { userId: "user-b", bookId: "book-b" } },
+    reservations: {}
+  };
+  assert.equal(claimPaidCouponRedemption(partial, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    timestamp: 1_800_000_000_000, hash
+  }), undefined);
+});
+
+test("paid coupon finalization retry is idempotent for the same user and book", () => {
+  const partial = { ...base(), discountPercent: 25, maxUses: 1, reservations: {
+    [hash("user-a")]: { userId: "user-a", bookId: "book-a", expiresAt: 1_900_000_000_000 }
+  }};
+  const first = claimPaidCouponRedemption(partial, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    timestamp: 1_800_000_000_000, hash
+  });
+  const retry = claimPaidCouponRedemption(first, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a", orderId: "order-a",
+    timestamp: 1_800_000_000_100, hash
+  });
+  assert.equal(retry.usedCount, 1);
+  assert.equal(Object.keys(retry.redemptions).length, 1);
 });
