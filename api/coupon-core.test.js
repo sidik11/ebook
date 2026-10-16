@@ -135,7 +135,7 @@ test("stale Razorpay order recovery checks coupon and discounted amount before r
   assert.match(source, /existingCouponCode === requestedCouponCode/);
   assert.match(source, /Number\(existingOrder\.amountPaise\) === Number\(pricePaise\)/);
   assert.match(source, /status: "SUPERSEDED"/);
-  assert.match(source, /if \(order\.status === "SUPERSEDED"\)/);
+  assert.match(source, /\["SUPERSEDED", "CANCELLED"\]\.includes\(String\(order\.status \|\| ""\)\.toUpperCase\(\)\)/);
 });
 
 

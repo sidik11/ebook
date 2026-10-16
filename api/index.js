@@ -1924,6 +1924,72 @@ router.patch("/admin/complaints/:id", async (req, res) => {
   }
 });
 
+
+// Expire abandoned checkout attempts after two minutes. The endpoint is called
+// by Vercel Cron; payment state is checked with Razorpay before any order is
+// marked cancelled, so a captured payment is never silently discarded.
+router.get("/cron/expire-orders", async (req, res) => {
+  const secret = String(process.env.CRON_SECRET || "");
+  const authHeader = String(req.headers.authorization || "");
+  if (!secret || authHeader !== "Bearer " + secret) {
+    return res.status(401).json({ error: "Unauthorized cron request." });
+  }
+  try {
+    const db = requireDb();
+    const snapshot = await db.ref("orders").once("value");
+    const cutoff = now() - 2 * 60 * 1000;
+    const razorpay = getRazorpay();
+    let expired = 0, skipped = 0;
+    const tasks = [];
+    snapshot.forEach(child => {
+      const order = child.val();
+      if (!order || !["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) return;
+      const createdAt = Number(order.createdAt || 0);
+      if (!createdAt || createdAt > cutoff || order.paymentId || order.razorpayPaymentId || order.paymentCapturedAt || order.paidAt) return;
+      tasks.push((async () => {
+        try {
+          const providerId = String(order.razorpayOrderId || child.key);
+          const providerOrder = await razorpay.orders.fetch(providerId);
+          if (!providerOrder || providerOrder.status === "paid") { skipped++; return; }
+          const tx = await db.ref("orders/" + key(child.key)).transaction(current => {
+            if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+            if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+            if (Number(current.createdAt || 0) > cutoff) return;
+            return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
+          });
+          if (!tx.committed) { skipped++; return; }
+          const finalOrder = tx.snapshot?.val() || {};
+          const lockId = hash(String(finalOrder.userId || finalOrder.uid || "") + ":" + String(finalOrder.bookId || finalOrder.book || ""));
+          await db.ref("checkoutLocks/" + lockId).transaction(current => {
+            if (!current || String(current.orderId || "") !== providerId) return;
+            return null;
+          });
+          const couponCode = normalizeCouponCode(finalOrder.couponCode || "");
+          const userId = String(finalOrder.userId || finalOrder.uid || "");
+          if (couponCode && userId) {
+            await db.ref("coupons/" + couponCode + "/reservations").transaction(current => {
+              if (!current || typeof current !== "object") return current;
+              const next = { ...current };
+              for (const [reservationId, entry] of Object.entries(next)) {
+                if (String(entry?.orderId || "") === providerId || couponReservationOwner(entry) === userId || couponReservationOwner(entry) === hash(userId)) delete next[reservationId];
+              }
+              return next;
+            });
+          }
+          expired++;
+        } catch (error) {
+          console.error("Abandoned order expiry failed:", child.key, error.message);
+          skipped++;
+        }
+      })());
+    });
+    await Promise.all(tasks);
+    res.set("Cache-Control", "no-store").json({ ok: true, expired, skipped, cutoff });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.status ? error.message : "Could not expire abandoned orders." });
+  }
+});
+
 router.get("/admin/orders", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
@@ -2008,19 +2074,27 @@ router.patch("/admin/orders/:id/terminate", async (req, res) => {
     const db = requireDb();
     let orderPath = "orders/" + key(orderId);
     let order = await get(orderPath);
+    // Legacy records may be stored under an internal Firebase key that differs
+    // from the Razorpay order ID displayed in the admin ledger.
     if (!order) {
-      const legacy = await get("order");
-      if (legacy && typeof legacy === "object") {
-        const entry = Object.entries(legacy).find(([childKey, value]) =>
-          String(value?.razorpayOrderId || value?.orderId || value?.id || childKey) === orderId
-        );
-        if (entry) {
-          orderPath = "order/" + key(entry[0]);
-          order = entry[1];
+      const db = requireDb();
+      for (const node of ["orders", "order"]) {
+        const snapshot = await db.ref(node).once("value");
+        let matched = null;
+        snapshot.forEach(child => {
+          if (matched) return;
+          const value = child.val();
+          const candidates = [child.key, value?.razorpayOrderId, value?.orderId, value?.id].filter(Boolean).map(String);
+          if (candidates.includes(orderId)) matched = { key: child.key, value };
+        });
+        if (matched) {
+          orderPath = node + "/" + key(matched.key);
+          order = matched.value;
+          break;
         }
       }
     }
-    if (!order) return res.status(404).json({ error: "Order not found." });
+    if (!order) return res.status(404).json({ error: "Order not found. Refresh the Orders list and try again." });
 
     const initialStatus = String(order.status || order.paymentStatus || "").trim().toUpperCase();
     if (!["CREATED", "PENDING"].includes(initialStatus)) {
@@ -2050,10 +2124,14 @@ router.patch("/admin/orders/:id/terminate", async (req, res) => {
     const terminatedOrder = tx.snapshot?.val() || {};
     const lockId = hash(String(terminatedOrder.userId || terminatedOrder.uid || "") + ":" + String(terminatedOrder.bookId || terminatedOrder.book || ""));
     const lockPath = "checkoutLocks/" + lockId;
+    // Remove the lock only when it still points to this exact order. Keeping a
+    // TERMINATED lock with an orderId would block the customer's next checkout.
     await db.ref(lockPath).transaction(current => {
       if (!current || String(current.orderId || "") !== orderId) return;
-      return { ...current, status: "TERMINATED", updatedAt: terminationTime };
-    }).catch(() => {});
+      return null;
+    }).catch(lockError => {
+      console.warn("Terminated order checkout-lock cleanup failed:", lockError.message);
+    });
     const couponCode = normalizeCouponCode(terminatedOrder.couponCode || "");
     if (couponCode && (terminatedOrder.userId || terminatedOrder.uid)) {
       const userKey = hash(String(terminatedOrder.userId || terminatedOrder.uid));
@@ -2651,7 +2729,7 @@ router.post("/orders/create", async (req, res) => {
         reservations[reservationKey] = {
           userId: auth.userId,
           bookId,
-          expiresAt: Math.max(couponReservationExpiryMs(ownReservation), currentTime + 30 * 60 * 1000)
+          expiresAt: Math.max(couponReservationExpiryMs(ownReservation), currentTime + 2 * 60 * 1000)
         };
         return { ...effective, reservations };
       });
@@ -2743,8 +2821,45 @@ router.post("/orders/create", async (req, res) => {
     lockPath = "checkoutLocks/" + purchaseId;
     const existingLock = await get(lockPath);
     if (existingLock?.orderId && Number(existingLock.expiresAt || 0) <= now()) {
+      const staleOrder = await get("orders/" + key(existingLock.orderId));
+      const staleAgeMs = now() - Number(staleOrder?.createdAt || now());
+      if (staleOrder && ["CREATED", "PENDING"].includes(String(staleOrder.status || "").toUpperCase()) &&
+          staleAgeMs >= 2 * 60 * 1000 && !staleOrder.paymentId && !staleOrder.razorpayPaymentId &&
+          !staleOrder.paymentCapturedAt && !staleOrder.paidAt) {
+        const razorpay = getRazorpay();
+        const providerOrder = await razorpay.orders.fetch(String(staleOrder.razorpayOrderId || existingLock.orderId));
+        if (providerOrder && providerOrder.status !== "paid") {
+          const cancelTx = await requireDb().ref("orders/" + key(existingLock.orderId)).transaction(current => {
+            if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+            if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+            if (now() - Number(current.createdAt || now()) < 2 * 60 * 1000) return;
+            return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
+          });
+          if (cancelTx.committed) {
+            await requireDb().ref(lockPath).transaction(current =>
+              current && String(current.orderId || "") === String(existingLock.orderId) ? null : undefined
+            );
+            const oldCoupon = normalizeCouponCode(staleOrder.couponCode || "");
+            const oldUserId = String(staleOrder.userId || staleOrder.uid || "");
+            if (oldCoupon && oldUserId) {
+              await requireDb().ref("coupons/" + oldCoupon + "/reservations").transaction(current => {
+                if (!current || typeof current !== "object") return current;
+                const next = { ...current };
+                for (const [reservationId, entry] of Object.entries(next)) {
+                  const owner = couponReservationOwner(entry);
+                  if (String(entry?.orderId || "") === String(existingLock.orderId) ||
+                      owner === oldUserId || owner === hash(oldUserId)) delete next[reservationId];
+                }
+                return next;
+              });
+            }
+          }
+        }
+      }
+    }
+    if (existingLock?.orderId && Number(existingLock.expiresAt || 0) <= now()) {
       const existingOrder = await get("orders/" + key(existingLock.orderId));
-      if (existingOrder?.status === "CREATED" && existingOrder.userId === auth.userId && existingOrder.bookId === bookId) {
+      if (existingOrder?.status === "CREATED" && now() - Number(existingOrder.createdAt || now()) < 2 * 60 * 1000 && existingOrder.userId === auth.userId && existingOrder.bookId === bookId) {
         const razorpay = getRazorpay();
         const providerOrder = await razorpay.orders.fetch(existingLock.orderId);
         const requestedCouponCode = coupon ? couponCode : "";
@@ -2752,7 +2867,7 @@ router.post("/orders/create", async (req, res) => {
         const orderMatchesRequestedPrice = Number(existingOrder.amountPaise) === Number(pricePaise) &&
           existingCouponCode === requestedCouponCode;
         if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise) && orderMatchesRequestedPrice) {
-          await update(lockPath, { status: "CREATED", updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
+          await update(lockPath, { status: "CREATED", updatedAt: now(), expiresAt: now() + 2 * 60 * 1000 });
           return res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: providerOrder.id, amount: providerOrder.amount, currency: providerOrder.currency, name: "MS Tech EBook", description: book.title, couponCode: requestedCouponCode, discount: discountRupees, recovered: true });
         }
         if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise) && !orderMatchesRequestedPrice) {
@@ -2765,7 +2880,7 @@ router.post("/orders/create", async (req, res) => {
             if (current?.orderId !== existingLock.orderId ||
                 Number(current?.expiresAt || 0) > now() ||
                 current?.status === "PAID") return;
-            return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 30 * 60 * 1000 };
+            return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 2 * 60 * 1000 };
           });
           if (!replaceLock.committed) {
             return res.status(409).json({ error: "Your previous checkout is still being reconciled. Please retry shortly." });
@@ -2780,7 +2895,7 @@ router.post("/orders/create", async (req, res) => {
       if (current && Number(current.expiresAt || 0) > now()) return;
       // A stale lock linked to an unresolved order must be recovered, not replaced.
       if (current?.orderId && current.status !== "PAID") return;
-      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 30 * 60 * 1000 };
+      return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 2 * 60 * 1000 };
     });
     if (!lockTx.committed) {
       return res.status(409).json({ error: "An earlier checkout is unresolved. Retry to resume it, or contact support if payment may already have been taken." });
@@ -2797,7 +2912,7 @@ router.post("/orders/create", async (req, res) => {
       originalAmount: Number(book.price), discount: discountRupees, couponCode: coupon ? couponCode : "",
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
-    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
+    await update(lockPath, { status: "CREATED", orderId: order.id, updatedAt: now(), expiresAt: now() + 2 * 60 * 1000 });
     res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title, couponCode: coupon ? couponCode : "", discount: discountRupees });
   } catch (e) {
     if (lockPath && lockToken) {
@@ -2814,7 +2929,7 @@ async function finalizePayment(paymentId, orderId) {
   const payment = await razorpay.payments.fetch(paymentId);
   const order = await get("orders/" + orderId);
   if (!order) fail(404, "Order not found");
-  if (order.status === "SUPERSEDED") {
+  if (["SUPERSEDED", "CANCELLED"].includes(String(order.status || "").toUpperCase())) {
     if (payment.order_id === orderId && payment.status === "captured" && Number(payment.amount) === Number(order.amountPaise)) {
       await requireDb().ref("orders/" + orderId).update({
         refundStatus: "REVIEW_REQUIRED", capturedAfterSupersededAt: now(),
