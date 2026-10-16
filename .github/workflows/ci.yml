@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "fix/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+            frontend/package-lock.json
+      - name: Install API dependencies
+        run: npm install --prefix api
+      - name: Install frontend dependencies
+        run: npm install --prefix frontend
+      - name: Run API tests and syntax checks
+        run: npm test
+      - name: Build frontend
+        run: npm run build --prefix frontend
