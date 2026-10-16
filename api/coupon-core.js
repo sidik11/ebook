@@ -125,7 +125,7 @@ function claimFreeCouponRedemption(current, {
  * overrun the coupon limit.
  */
 function claimPaidCouponRedemption(current, {
-  userId, userKey, bookId, orderId, couponCode, timestamp, hash
+  userId, userKey, bookId, orderId, couponCode, expectedDiscountPercent, timestamp, hash
 }) {
   // Fail closed: never recreate a deleted/missing coupon from a stale checkout
   // snapshot. The caller primes the RTDB reference before starting the transaction.
@@ -147,6 +147,8 @@ function claimPaidCouponRedemption(current, {
 
   const percent = couponPercent(source);
   if (percent < 5 || percent >= 100) return;
+  if (expectedDiscountPercent !== undefined && expectedDiscountPercent !== null &&
+      Number(expectedDiscountPercent) !== percent) return;
 
   const rawMaxUses = source.maxUses ?? source.max_uses ?? source.usageLimit ??
     source.usage_limit ?? source.maxRedemptions ?? source.totalUses;
