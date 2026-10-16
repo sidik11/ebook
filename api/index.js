@@ -1998,6 +1998,83 @@ router.get("/admin/orders", async (req, res) => {
   }
 });
 
+router.patch("/admin/orders/:id/terminate", async (req, res) => {
+  try {
+    const auth = await adminGuard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const orderId = String(req.params.id || "").trim();
+    if (!orderId || orderId.length > 160) return res.status(400).json({ error: "Invalid order ID." });
+
+    const db = requireDb();
+    let orderPath = "orders/" + key(orderId);
+    let order = await get(orderPath);
+    if (!order) {
+      const legacy = await get("order");
+      if (legacy && typeof legacy === "object") {
+        const entry = Object.entries(legacy).find(([childKey, value]) =>
+          String(value?.razorpayOrderId || value?.orderId || value?.id || childKey) === orderId
+        );
+        if (entry) {
+          orderPath = "order/" + key(entry[0]);
+          order = entry[1];
+        }
+      }
+    }
+    if (!order) return res.status(404).json({ error: "Order not found." });
+
+    const initialStatus = String(order.status || order.paymentStatus || "").trim().toUpperCase();
+    if (!["CREATED", "PENDING"].includes(initialStatus)) {
+      return res.status(409).json({ error: "Only CREATED or PENDING orders can be terminated. Paid or otherwise finalized orders cannot be terminated here." });
+    }
+    if (order.paymentId || order.razorpayPaymentId || order.paymentCapturedAt || order.paidAt) {
+      return res.status(409).json({ error: "This order has payment data and requires payment reconciliation instead of termination." });
+    }
+
+    const terminationTime = now();
+    const tx = await db.ref(orderPath).transaction(current => {
+      if (!current || !["CREATED", "PENDING"].includes(String(current.status || current.paymentStatus || "").trim().toUpperCase())) return;
+      if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+      return {
+        ...current,
+        status: "TERMINATED",
+        terminatedAt: terminationTime,
+        terminatedBy: safeText(auth.user?.email || auth.userId || "admin", 160),
+        terminationReason: "ADMIN_TERMINATED_PENDING_ORDER",
+        updatedAt: terminationTime
+      };
+    });
+    if (!tx.committed) {
+      return res.status(409).json({ error: "Order status changed while terminating it. Refresh the payment ledger and try again." });
+    }
+
+    const terminatedOrder = tx.snapshot?.val() || {};
+    const lockId = hash(String(terminatedOrder.userId || terminatedOrder.uid || "") + ":" + String(terminatedOrder.bookId || terminatedOrder.book || ""));
+    const lockPath = "checkoutLocks/" + lockId;
+    await db.ref(lockPath).transaction(current => {
+      if (!current || String(current.orderId || "") !== orderId) return;
+      return { ...current, status: "TERMINATED", updatedAt: terminationTime };
+    }).catch(() => {});
+    const couponCode = normalizeCouponCode(terminatedOrder.couponCode || "");
+    if (couponCode && (terminatedOrder.userId || terminatedOrder.uid)) {
+      const userKey = hash(String(terminatedOrder.userId || terminatedOrder.uid));
+      await db.ref("coupons/" + couponCode + "/reservations").transaction(current => {
+        if (!current || typeof current !== "object") return current;
+        const next = { ...current };
+        for (const [reservationId, entry] of Object.entries(next)) {
+          const owner = couponReservationOwner(entry);
+          if (owner === String(terminatedOrder.userId || terminatedOrder.uid) || owner === userKey ||
+              (entry?.orderId && String(entry.orderId) === orderId)) delete next[reservationId];
+        }
+        return next;
+      }).catch(() => {});
+    }
+    await audit("ORDER_TERMINATED", auth, { orderId, previousStatus: initialStatus });
+    res.set("Cache-Control", "no-store, max-age=0").json({ ok: true, orderId, status: "TERMINATED" });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not terminate order." });
+  }
+});
+
 router.patch("/admin/books/:id", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
