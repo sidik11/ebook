@@ -1896,10 +1896,39 @@ router.get("/admin/orders", async (req, res) => {
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
-    const snap = await requireDb().ref("orders").once("value");
-    const rawOrders = [];
-    snap.forEach(child => rawOrders.push({ id: child.key, ...(child.val() || {}) }));
-    rawOrders.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    const db = requireDb();
+    const [snap, legacySnap] = await Promise.all([
+      db.ref("orders").once("value"),
+      // Older deployments stored Razorpay orders under the singular "order" node.
+      // Read it for admin visibility while keeping "orders" as the canonical path.
+      db.ref("order").once("value")
+    ]);
+    const byId = new Map();
+    const addOrderSnapshot = (snapshot, legacy = false) => {
+      snapshot.forEach(child => {
+        const value = child.val();
+        if (!value || typeof value !== "object") return;
+        const id = String(value.razorpayOrderId || value.orderId || value.id || child.key || "");
+        if (!id) return;
+        const normalized = {
+          ...value,
+          id,
+          razorpayOrderId: value.razorpayOrderId || value.orderId || id,
+          // Legacy orders may store amount in paise only.
+          amount: value.amount != null ? Number(value.amount) : Number(value.amountPaise || 0) / 100,
+          amountPaise: value.amountPaise != null ? Number(value.amountPaise) : Math.round(Number(value.amount || 0) * 100),
+          status: value.status || value.paymentStatus || "UNKNOWN",
+          _legacyOrderNode: legacy
+        };
+        const existing = byId.get(id);
+        // Canonical records win; legacy entries fill in missing historical orders.
+        if (!existing || (existing._legacyOrderNode && !legacy)) byId.set(id, normalized);
+      });
+    };
+    addOrderSnapshot(legacySnap, true);
+    addOrderSnapshot(snap, false);
+    const rawOrders = Array.from(byId.values());
+    rawOrders.sort((a, b) => Number(b.paymentCapturedAt || b.createdAt || 0) - Number(a.paymentCapturedAt || a.createdAt || 0));
     const orders = [];
     for (const order of rawOrders.slice(0, limit)) {
       const [customer, book] = await Promise.all([
@@ -1908,9 +1937,9 @@ router.get("/admin/orders", async (req, res) => {
       ]);
       orders.push({
         id: order.id,
-        userId: order.userId || null,
+        userId: order.userId || order.uid || null,
         userEmail: validEmail(customer?.email) ? customer.email : "",
-        bookId: order.bookId || null,
+        bookId: order.bookId || order.book || null,
         bookTitle: safeText(book?.title, MAX_BOOK_TITLE),
         amount: Number(order.amount || 0),
         amountPaise: Number(order.amountPaise || 0),
@@ -1923,7 +1952,7 @@ router.get("/admin/orders", async (req, res) => {
         refundStatus: safeText(order.refundStatus, 30),
         status: safeText(order.status, 30),
         razorpayOrderId: safeText(order.razorpayOrderId || order.id, 100),
-        paymentId: safeText(order.paymentId, 100),
+        paymentId: safeText(order.paymentId || order.razorpayPaymentId, 100),
         createdAt: Number(order.createdAt || 0),
         paymentCapturedAt: Number(order.paymentCapturedAt || 0),
         updatedAt: Number(order.updatedAt || 0),
