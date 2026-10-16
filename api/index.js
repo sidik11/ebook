@@ -3194,7 +3194,8 @@ router.post("/orders/create", async (req, res) => {
         if (providerSafeToRelease) {
           await db.ref(lockPath).transaction(current => {
             if (!current || String(current.orderId || "") !== staleId ||
-                Number(current.expiresAt || 0) > now() ||
+                (Number(current.expiresAt || 0) > now() &&
+                 now() - Number(current.createdAt || 0) < 2 * 60 * 1000) ||
                 String(current.status || "").toUpperCase() === "PAID") return;
             return null;
           });
