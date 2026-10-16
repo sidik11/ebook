@@ -2889,6 +2889,41 @@ router.post("/orders/create", async (req, res) => {
       }
     }
 
+    // Final stale-lock recovery: an expired lock must not block checkout
+    // forever if the linked ledger record is missing or already finalized.
+    const lockBeforeAcquire = await get(lockPath);
+    if (lockBeforeAcquire?.orderId && Number(lockBeforeAcquire.expiresAt || 0) <= now()) {
+      const staleId = String(lockBeforeAcquire.orderId);
+      const staleOrder = await get("orders/" + key(staleId));
+      const staleStatus = String(staleOrder?.status || "").toUpperCase();
+      if (staleStatus !== "PAID" && !staleOrder?.paymentId && !staleOrder?.razorpayPaymentId &&
+          !staleOrder?.paymentCapturedAt && !staleOrder?.paidAt) {
+        let providerSafeToRelease = false;
+        try {
+          const providerOrder = await getRazorpay().orders.fetch(String(staleOrder?.razorpayOrderId || staleId));
+          providerSafeToRelease = Boolean(providerOrder && String(providerOrder.status || "").toLowerCase() !== "paid");
+        } catch (providerError) {
+          console.warn("Could not verify stale checkout with Razorpay; retaining lock:", providerError.message);
+        }
+        if (providerSafeToRelease) {
+          if (staleOrder && ["CREATED", "PENDING"].includes(staleStatus) &&
+              now() - Number(staleOrder.createdAt || now()) >= 2 * 60 * 1000) {
+            await requireDb().ref("orders/" + key(staleId)).transaction(current => {
+              if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+              if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+              if (now() - Number(current.createdAt || now()) < 2 * 60 * 1000) return;
+              return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
+            });
+          }
+          await requireDb().ref(lockPath).transaction(current => {
+            if (!current || String(current.orderId || "") !== staleId || Number(current.expiresAt || 0) > now()) return;
+            if (current.status === "PAID") return;
+            return null;
+          });
+        }
+      }
+    }
+
     // Atomic lock protects against concurrent checkout requests.
     lockToken = randomToken();
     const lockTx = await requireDb().ref(lockPath).transaction(current => {
