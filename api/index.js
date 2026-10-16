@@ -3055,37 +3055,77 @@ router.post("/orders/create", async (req, res) => {
       }
     }
 
-    // Final stale-lock recovery: an expired lock must not block checkout
-    // forever if the linked ledger record is missing or already finalized.
+    // Final stale-lock recovery. Resolve both current and legacy Firebase
+    // order layouts; old locks may point to a child key that differs from the
+    // Razorpay order ID. Never release a lock unless Razorpay is verified unpaid.
     const lockBeforeAcquire = await get(lockPath);
     if (lockBeforeAcquire?.orderId && Number(lockBeforeAcquire.expiresAt || 0) <= now()) {
       const staleId = String(lockBeforeAcquire.orderId);
-      const staleOrder = await get("orders/" + key(staleId));
-      const staleStatus = String(staleOrder?.status || "").toUpperCase();
-      if (staleStatus !== "PAID" && !staleOrder?.paymentId && !staleOrder?.razorpayPaymentId &&
-          !staleOrder?.paymentCapturedAt && !staleOrder?.paidAt) {
+      const db = requireDb();
+      let staleMatch = null;
+      for (const node of ["orders", "order"]) {
+        const snap = await db.ref(node).once("value");
+        snap.forEach(child => {
+          if (staleMatch) return;
+          const value = child.val();
+          if (!value || typeof value !== "object") return;
+          const ids = [child.key, value.razorpayOrderId, value.orderId, value.id].filter(Boolean).map(String);
+          if (ids.includes(staleId)) staleMatch = { node, key: child.key, value };
+        });
+        if (staleMatch) break;
+      }
+      const staleOrder = staleMatch?.value || null;
+      const staleStatus = String(staleOrder?.status || staleOrder?.paymentStatus || "").toUpperCase();
+      const hasPaymentEvidence = Boolean(staleOrder?.paymentId || staleOrder?.razorpayPaymentId ||
+        staleOrder?.paymentCapturedAt || staleOrder?.paidAt ||
+        ["PAID", "CAPTURED"].includes(staleStatus));
+      if (!hasPaymentEvidence) {
         let providerSafeToRelease = false;
         try {
-          const providerOrder = await getRazorpay().orders.fetch(String(staleOrder?.razorpayOrderId || staleId));
-          providerSafeToRelease = Boolean(providerOrder && String(providerOrder.status || "").toLowerCase() !== "paid");
+          const providerId = String(staleOrder?.razorpayOrderId || staleOrder?.orderId || staleId);
+          const providerOrder = await getRazorpay().orders.fetch(providerId);
+          providerSafeToRelease = Boolean(providerOrder &&
+            String(providerOrder.status || "").toLowerCase() !== "paid" &&
+            Number(providerOrder.amount_paid || 0) === 0);
         } catch (providerError) {
           console.warn("Could not verify stale checkout with Razorpay; retaining lock:", providerError.message);
         }
+        const orderAge = now() - Number(staleOrder?.createdAt || 0);
+        if (providerSafeToRelease && staleMatch &&
+            ["CREATED", "PENDING"].includes(staleStatus) && orderAge >= 2 * 60 * 1000) {
+          const orderRef = db.ref(staleMatch.node + "/" + key(staleMatch.key));
+          await orderRef.transaction(current => {
+            if (!current || !["CREATED", "PENDING"].includes(String(current.status || current.paymentStatus || "").toUpperCase())) return;
+            if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+            if (now() - Number(current.createdAt || 0) < 2 * 60 * 1000) return;
+            return { ...current, status: "CANCELLED", cancelledAt: now(),
+              cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
+          });
+        }
+        // A missing or already-finalized ledger record can only be unlocked
+        // after provider verification and a fresh check that this is still the
+        // same expired lock. Unknown payment status deliberately keeps the lock.
         if (providerSafeToRelease) {
-          if (staleOrder && ["CREATED", "PENDING"].includes(staleStatus) &&
-              now() - Number(staleOrder.createdAt || now()) >= 2 * 60 * 1000) {
-            await requireDb().ref("orders/" + key(staleId)).transaction(current => {
-              if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
-              if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
-              if (now() - Number(current.createdAt || now()) < 2 * 60 * 1000) return;
-              return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
-            });
-          }
-          await requireDb().ref(lockPath).transaction(current => {
-            if (!current || String(current.orderId || "") !== staleId || Number(current.expiresAt || 0) > now()) return;
-            if (current.status === "PAID") return;
+          await db.ref(lockPath).transaction(current => {
+            if (!current || String(current.orderId || "") !== staleId ||
+                Number(current.expiresAt || 0) > now() ||
+                String(current.status || "").toUpperCase() === "PAID") return;
             return null;
           });
+          const couponCode = normalizeCouponCode(staleOrder?.couponCode || "");
+          const staleUserId = String(staleOrder?.userId || staleOrder?.uid || lockBeforeAcquire.userId || "");
+          if (couponCode && staleUserId) {
+            await db.ref("coupons/" + couponCode + "/reservations").transaction(current => {
+              if (!current || typeof current !== "object") return current;
+              const next = { ...current };
+              for (const [reservationId, entry] of Object.entries(next)) {
+                const owner = couponReservationOwner(entry);
+                if (String(entry?.orderId || "") === staleId ||
+                    owner === staleUserId || owner === hash(staleUserId)) delete next[reservationId];
+              }
+              return next;
+            });
+          }
         }
       }
     }
