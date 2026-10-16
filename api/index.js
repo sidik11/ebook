@@ -2108,9 +2108,10 @@ router.post("/admin/checkout-locks/:lockKey/recover", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth || !requireCsrf(req, res, auth)) return;
     const lockKey = String(req.params.lockKey || "").trim();
-    if (!lockKey || lockKey.length > 180 || /[.#$\[\]/]/.test(lockKey)) {
+    if (!lockKey || lockKey.length > 180 || [".", "#", "$", "[", "]", "/"].some(char => lockKey.includes(char))) {
       return res.status(400).json({ error: "Invalid checkout lock key." });
     }
+
     const db = requireDb();
     const lockRef = db.ref("checkoutLocks/" + lockKey);
     const lockSnap = await lockRef.once("value");
@@ -2119,54 +2120,116 @@ router.post("/admin/checkout-locks/:lockKey/recover", async (req, res) => {
     if (String(lock.status || "").toUpperCase() === "PAID") {
       return res.status(409).json({ error: "This checkout lock is marked PAID and cannot be removed here." });
     }
+
+    const timestamp = now();
+    const lockCreatedAt = Number(lock.createdAt || 0);
     const expiresAt = Number(lock.expiresAt || 0);
-    const createdAt = Number(lock.createdAt || 0);
-    if (!expiresAt || expiresAt > now() || !createdAt || now() - createdAt < 2 * 60 * 1000) {
+    // Older locks sometimes lack expiresAt. Age alone is not sufficient to
+    // delete them unless the order is also independently verified unpaid.
+    if (!lockCreatedAt || timestamp - lockCreatedAt < 2 * 60 * 1000 ||
+        (expiresAt > 0 && expiresAt > timestamp)) {
       return res.status(409).json({ error: "This lock is not yet safely expired. Wait at least two minutes and refresh." });
     }
 
-    const orderId = String(lock.orderId || "");
-    let order = null;
-    if (orderId) {
-      order = await get("orders/" + key(orderId));
-      if (order?.paymentId || order?.razorpayPaymentId || order?.paymentCapturedAt || order?.paidAt ||
-          ["PAID", "CAPTURED"].includes(String(order?.status || "").toUpperCase())) {
-        return res.status(409).json({ error: "Payment data exists. Do not delete this lock; reconcile the payment first." });
-      }
-      let providerOrder;
-      try {
-        providerOrder = await getRazorpay().orders.fetch(String(order?.razorpayOrderId || orderId));
-      } catch (providerError) {
-        return res.status(409).json({ error: "Could not verify the Razorpay order. Lock retained for safety; try again later." });
-      }
-      if (!providerOrder || String(providerOrder.status || "").toLowerCase() === "paid") {
-        return res.status(409).json({ error: "Razorpay reports this order may be paid. Lock retained for reconciliation." });
-      }
-      if (order && ["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) {
-        const tx = await db.ref("orders/" + key(orderId)).transaction(current => {
-          if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
-          if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
-          if (now() - Number(current.createdAt || 0) < 2 * 60 * 1000) return;
-          return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "ADMIN_RECOVERED_EXPIRED_CHECKOUT", updatedAt: now() };
-        });
-        if (!tx.committed) return res.status(409).json({ error: "Order status changed during recovery. Refresh and reconcile it." });
+    const providerOrderId = String(lock.orderId || "");
+    if (!providerOrderId) {
+      return res.status(409).json({ error: "This lock has no order ID. It was retained for manual review." });
+    }
+
+    // Resolve both current and legacy database layouts. In older records, the
+    // Firebase child key can differ from the Razorpay order ID shown in Admin.
+    let matchedOrder = null;
+    for (const node of ["orders", "order"]) {
+      const snapshot = await db.ref(node).once("value");
+      snapshot.forEach(child => {
+        if (matchedOrder) return;
+        const value = child.val();
+        if (!value || typeof value !== "object") return;
+        const ids = [child.key, value.razorpayOrderId, value.orderId, value.id].filter(Boolean).map(String);
+        if (ids.includes(providerOrderId)) {
+          matchedOrder = { node, key: child.key, value };
+        }
+      });
+      if (matchedOrder) break;
+    }
+
+    const order = matchedOrder?.value || null;
+    if (order && (
+      order.paymentId || order.razorpayPaymentId || order.paymentCapturedAt || order.paidAt ||
+      ["PAID", "CAPTURED"].includes(String(order.status || "").toUpperCase())
+    )) {
+      return res.status(409).json({ error: "Payment data exists. Do not delete this lock; reconcile the payment first." });
+    }
+
+    // Fail closed if Razorpay cannot confirm the provider order is unpaid.
+    let providerOrder;
+    try {
+      providerOrder = await getRazorpay().orders.fetch(String(order?.razorpayOrderId || order?.orderId || providerOrderId));
+    } catch (providerError) {
+      console.error("Checkout recovery could not verify Razorpay order:", providerOrderId, providerError.message);
+      return res.status(409).json({ error: "Razorpay status could not be verified. Lock retained for safety; retry after checking the payment dashboard." });
+    }
+    if (!providerOrder || String(providerOrder.status || "").toLowerCase() === "paid" ||
+        Number(providerOrder.amount_paid || 0) > 0) {
+      return res.status(409).json({ error: "Razorpay reports this order may be paid. Lock retained for reconciliation." });
+    }
+
+    if (matchedOrder && ["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) {
+      const orderRef = db.ref(matchedOrder.node + "/" + key(matchedOrder.key));
+      const tx = await orderRef.transaction(current => {
+        if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+        if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+        if (timestamp - Number(current.createdAt || 0) < 2 * 60 * 1000) return;
+        return { ...current, status: "CANCELLED", cancelledAt: timestamp, cancelReason: "ADMIN_RECOVERED_EXPIRED_CHECKOUT", updatedAt: timestamp };
+      });
+      if (!tx.committed) {
+        return res.status(409).json({ error: "Order changed during recovery. Refresh and reconcile it." });
       }
     }
 
+    // Delete only the exact lock originally read, preventing a concurrent new
+    // checkout from being removed by this recovery request.
     const removed = await lockRef.transaction(current => {
-      if (!current || current.status === "PAID" || Number(current.expiresAt || 0) > now() ||
-          now() - Number(current.createdAt || 0) < 2 * 60 * 1000 ||
-          (orderId && String(current.orderId || "") !== orderId)) return;
+      if (!current || String(current.orderId || "") !== providerOrderId ||
+          String(current.status || "").toUpperCase() === "PAID") return;
+      const currentCreatedAt = Number(current.createdAt || 0);
+      const currentExpiresAt = Number(current.expiresAt || 0);
+      if (!currentCreatedAt || now() - currentCreatedAt < 2 * 60 * 1000 ||
+          (currentExpiresAt > 0 && currentExpiresAt > now())) return;
       return null;
     });
     if (!removed.committed) return res.status(409).json({ error: "Lock changed during recovery. Refresh the list and try again." });
-    await audit("CHECKOUT_LOCK_RECOVERED", auth, { lockKey, orderId, previousStatus: order?.status || lock.status || "UNKNOWN" });
-    res.set("Cache-Control", "no-store, max-age=0").json({ ok: true, lockKey, orderId, status: order ? "CANCELLED" : "LOCK_REMOVED" });
+
+    // Release coupon reservations belonging to this old order so a stale
+    // attempt does not block the customer from starting a fresh checkout.
+    const couponCode = normalizeCouponCode(order?.couponCode || "");
+    const userId = String(order?.userId || order?.uid || lock.userId || "");
+    if (couponCode && userId) {
+      await db.ref("coupons/" + couponCode + "/reservations").transaction(current => {
+        if (!current || typeof current !== "object") return current;
+        const next = { ...current };
+        for (const [reservationId, entry] of Object.entries(next)) {
+          if (String(entry?.orderId || "") === providerOrderId ||
+              couponReservationOwner(entry) === userId ||
+              couponReservationOwner(entry) === hash(userId)) delete next[reservationId];
+        }
+        return next;
+      });
+    }
+
+    await audit("CHECKOUT_LOCK_RECOVERED", auth, {
+      lockKey, orderId: providerOrderId, matchedOrderNode: matchedOrder?.node || null,
+      matchedOrderKey: matchedOrder?.key || null, previousStatus: order?.status || lock.status || "UNKNOWN"
+    });
+    res.set("Cache-Control", "no-store, max-age=0").json({
+      ok: true, lockKey, orderId: providerOrderId,
+      status: matchedOrder ? "CANCELLED" : "LOCK_REMOVED"
+    });
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not recover checkout lock." });
+    console.error("Checkout lock recovery error:", e);
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not recover checkout lock. Check server logs for the underlying error." });
   }
 });
-
 router.patch("/admin/orders/:id/terminate", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
