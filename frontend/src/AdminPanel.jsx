@@ -42,6 +42,7 @@ const NAV = [
   { key: "upload", label: "Upload Book", icon: UploadCloud },
   { key: "library", label: "Library", icon: LibraryIcon },
   { key: "orders", label: "Orders", icon: ShoppingBag },
+  { key: "checkout-recovery", label: "Checkout Recovery", icon: Clock3 },
   { key: "complaints", label: "Complaints", icon: MessageSquare },
   { key: "users", label: "Users", icon: Users },
   { key: "staff", label: "Sub-admins & Review", icon: UserCheck },
@@ -88,6 +89,8 @@ function AdminPanel() {
   );
   const [orders, setOrders] = useState([]);
   const [orderBusyId, setOrderBusyId] = useState("");
+  const [checkoutLocks, setCheckoutLocks] = useState([]);
+  const [lockBusyKey, setLockBusyKey] = useState("");
   const [coupons, setCoupons] = useState([]);
   const [featuredBookIds, setFeaturedBookIds] = useState([]);
   const [featuredBusy, setFeaturedBusy] = useState(false);
@@ -263,6 +266,37 @@ function AdminPanel() {
       setOrders(Array.isArray(data.orders) ? data.orders : []);
     } catch {
       setOrders([]);
+    }
+  };
+
+  const loadCheckoutLocks = async () => {
+    try {
+      const data = await api("/api/admin/checkout-locks");
+      setCheckoutLocks(Array.isArray(data.locks) ? data.locks : []);
+    } catch (err) {
+      showNotice("error", err.message || "Checkout locks could not be loaded.");
+    }
+  };
+
+  const recoverCheckoutLock = async lock => {
+    if (!lock.recoverable) {
+      showNotice("error", "This lock is not safely expired yet. Refresh after two minutes.");
+      return;
+    }
+    if (!window.confirm("Recover this expired checkout? The server will verify Razorpay status first. Unpaid old orders will be marked CANCELLED and the matching lock removed. If payment may have been captured, recovery will be refused.")) return;
+    setLockBusyKey(lock.lockKey);
+    try {
+      const result = await api("/api/admin/checkout-locks/" + encodeURIComponent(lock.lockKey) + "/recover", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      showNotice("success", result.status === "CANCELLED" ? "Old unpaid order cancelled and checkout lock removed." : "Expired checkout lock removed.");
+      await Promise.all([loadCheckoutLocks(), loadOrders(), loadAnalytics()]);
+    } catch (err) {
+      showNotice("error", err.message || "Could not recover checkout lock. Refresh and check payment status.");
+      await loadCheckoutLocks();
+    } finally {
+      setLockBusyKey("");
     }
   };
 
@@ -1109,6 +1143,54 @@ function AdminPanel() {
                 </div>
               ) : (
                 <EmptyState icon={<LibraryIcon size={30} />} title="Nothing matches your filters" text={books.length ? "Clear the filters or search another title." : "Start by uploading your first ebook."} action={!books.length ? <button className="admin-primary" onClick={() => setView("upload")}><UploadCloud size={17} /> Upload first book</button> : null} />
+              )}
+            </div>
+          </section>
+        )}
+
+        {view === "checkout-recovery" && (
+          <section className="admin-page-grid">
+            <div className="admin-card">
+              <SectionHeading
+                eyebrow="CHECKOUT LOCKS"
+                title={"Checkout recovery · " + checkoutLocks.length}
+                subtitle="Review stale checkout attempts that can block a new order. Recovery is allowed only after the lock has expired for at least two minutes and Razorpay confirms the order is unpaid."
+                action={<button className="admin-secondary" onClick={loadCheckoutLocks}><RefreshCw size={15} /> Refresh locks</button>}
+              />
+              <div className="admin-notice admin-notice-warning" role="note">
+                Never remove a lock if payment may have been captured. The recovery endpoint checks the payment provider and refuses to remove locks when payment status cannot be verified.
+              </div>
+              {checkoutLocks.length ? (
+                <div className="admin-data-table-wrap">
+                  <table className="admin-data-table">
+                    <thead><tr><th>Order / lock</th><th>Book</th><th>Status</th><th>Age</th><th>Lock expiry</th><th>Action</th></tr></thead>
+                    <tbody>
+                      {checkoutLocks.map(lock => (
+                        <tr key={lock.lockKey}>
+                          <td>
+                            <strong>{lock.orderId || "No order ID yet"}</strong>
+                            <small style={{display:"block",color:"var(--muted,#888)"}}>Lock: {lock.lockKey}</small>
+                            {!lock.hasOrder && <small style={{display:"block",color:"#b45309"}}>Order record not found</small>}
+                            {lock.hasPaymentData && <small style={{display:"block",color:"#b91c1c"}}>Payment data present — recovery blocked</small>}
+                          </td>
+                          <td>{lock.bookId || "—"}</td>
+                          <td><b className={"admin-table-pill " + (lock.status === "PAID" ? "good" : "neutral")}>{lock.status}</b></td>
+                          <td>{lock.ageMs ? Math.floor(lock.ageMs / 60000) + " min" : "Unknown"}</td>
+                          <td>{lock.expired ? "Expired" : lock.expiresAt ? formatDate(lock.expiresAt) : "No expiry"}</td>
+                          <td>
+                            {lock.recoverable ? (
+                              <button className="admin-user-action block" disabled={lockBusyKey === lock.lockKey} onClick={() => recoverCheckoutLock(lock)}>
+                                {lockBusyKey === lock.lockKey ? "Recovering…" : "Recover / Delete"}
+                              </button>
+                            ) : <span>{lock.status === "PAID" ? "Paid — locked" : lock.hasPaymentData ? "Reconcile payment" : "Not eligible yet"}</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <EmptyState icon={<Clock3 size={30} />} title="No checkout locks found" text="Refresh to load checkout attempts. Expired stale locks will appear here if they still exist." />
               )}
             </div>
           </section>
