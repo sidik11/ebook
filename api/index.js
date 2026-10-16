@@ -2329,11 +2329,17 @@ router.post("/coupons/validate", async (req, res) => {
     if (!coupon) return res.status(400).json({ error: "This coupon is inactive or expired." });
 
     const userKey = hash(auth.userId);
-    const [priorUse, currentCouponSnap] = await Promise.all([
+    const [priorUse, currentCouponSnap, couponUsesLedger] = await Promise.all([
       get("couponUses/" + code + "/" + userKey),
-      requireDb().ref("coupons/" + code).once("value")
+      requireDb().ref("coupons/" + code).once("value"),
+      get("couponUses/" + code)
     ]);
     const canonical = currentCouponSnap.val() || coupon;
+    // The per-account use ledger is authoritative even if an earlier request
+    // recorded a payment but failed to reconcile coupons.usedCount.
+    const ledgerUseCount = couponUsesLedger && typeof couponUsesLedger === "object"
+      ? Object.keys(couponUsesLedger).length
+      : 0;
     const priorRedemption = (canonical.redemptions || {})[userKey];
     if ((priorUse && priorUse.bookId !== bookId) || (priorRedemption && priorRedemption.bookId !== bookId)) {
       return res.status(409).json({ error: "This account has already used this coupon for another ebook." });
@@ -2348,7 +2354,7 @@ router.post("/coupons/validate", async (req, res) => {
     }
 
     const maxUses = Number(canonical.maxUses ?? coupon.maxUses ?? 0);
-    const recordedUses = couponRecordedUses(canonical);
+    const recordedUses = couponRecordedUses(canonical, ledgerUseCount);
     const activeReservations = couponLiveReservations(canonical, now(), auth.userId);
     if (!Number.isInteger(maxUses) || maxUses < 1) {
       return res.status(409).json({ error: "This coupon has an invalid usage limit. Check it in the admin panel." });
@@ -2653,6 +2659,13 @@ router.post("/orders/create", async (req, res) => {
         return res.status(400).json({ error: "This coupon is inactive or expired. Please apply it again." });
       }
       coupon = latestCoupon;
+      // Count completed redemptions from the per-user ledger as well as the
+      // aggregate coupon record. This prevents a paid redemption from being
+      // reused if aggregate counter reconciliation previously failed.
+      const existingCouponUses = await get("couponUses/" + couponCode);
+      const couponLedgerUseCount = existingCouponUses && typeof existingCouponUses === "object"
+        ? Object.keys(existingCouponUses).length
+        : 0;
       let reservationAbortReason = "not_attempted";
       let usedProvisionalCoupon = false;
       const reserveCoupon = () => couponRef.transaction(current => {
@@ -2700,7 +2713,7 @@ router.post("/orders/create", async (req, res) => {
           }
         });
         const activeOtherReservations = couponLiveReservations({ ...effective, reservations }, currentTime, auth.userId);
-        const recordedUses = couponRecordedUses(effective);
+        const recordedUses = couponRecordedUses(effective, couponLedgerUseCount);
         const maxUses = Number(effective.maxUses || 0);
         if (!Number.isSafeInteger(maxUses) || maxUses < 1) {
           reservationAbortReason = "invalid_usage_limit";
@@ -2740,7 +2753,7 @@ router.post("/orders/create", async (req, res) => {
         });
         if (!sameUserReservation) {
           const maxUses = Number(latest.maxUses || coupon?.maxUses || 0);
-          const recordedUses = couponRecordedUses(latest);
+          const recordedUses = couponRecordedUses(latest, couponLedgerUseCount);
           const activeReservations = couponLiveReservations(latest, now(), auth.userId);
           if (recordedUses >= maxUses) {
             return res.status(409).json({ error: "This coupon has reached its usage limit.", diagnostics: { configuredMaxUses: maxUses, recordedUses, activeReservations } });
