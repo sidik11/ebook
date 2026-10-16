@@ -2133,7 +2133,62 @@ router.post("/admin/checkout-locks/:lockKey/recover", async (req, res) => {
 
     const providerOrderId = String(lock.orderId || "");
     if (!providerOrderId) {
-      return res.status(409).json({ error: "This lock has no order ID. It was retained for manual review." });
+      // A CREATING lock can be left behind if the request dies before Razorpay
+      // returns an order ID. No provider payment can be tied to this lock yet,
+      // so after the expiry/age checks above it is safe to remove this exact
+      // orphan lock without attempting a Razorpay lookup.
+      const orphanRemoved = await lockRef.transaction(current => {
+        if (!current || current.orderId ||
+            String(current.status || "").toUpperCase() === "PAID") return;
+        const createdAt = Number(current.createdAt || 0);
+        const currentExpiry = Number(current.expiresAt || 0);
+        if (!createdAt || now() - createdAt < 2 * 60 * 1000 ||
+            (currentExpiry > 0 && currentExpiry > now())) return;
+        return null;
+      });
+      if (!orphanRemoved.committed) {
+        return res.status(409).json({ error: "The checkout lock changed during recovery. Refresh the list and retry." });
+      }
+
+      // Clear only expired coupon reservations for this same user/book. Do
+      // not touch a reservation still valid for a newer checkout.
+      const orphanUserId = String(lock.userId || "");
+      const orphanBookId = String(lock.bookId || "");
+      if (orphanUserId && orphanBookId) {
+        const couponsSnap = await db.ref("coupons").once("value");
+        const cleanupTasks = [];
+        couponsSnap.forEach(couponChild => {
+          const reservations = couponChild.val()?.reservations;
+          if (!reservations || typeof reservations !== "object") return;
+          const matchingExpired = Object.entries(reservations).some(([reservationId, entry]) => {
+            const owner = couponReservationOwner(entry);
+            return (owner === orphanUserId || owner === hash(orphanUserId) || reservationId === hash(orphanUserId)) &&
+              String(entry?.bookId || "") === orphanBookId &&
+              couponReservationExpiryMs(entry) <= timestamp;
+          });
+          if (!matchingExpired) return;
+          cleanupTasks.push(db.ref("coupons/" + key(couponChild.key) + "/reservations").transaction(current => {
+            if (!current || typeof current !== "object") return current;
+            const next = { ...current };
+            for (const [reservationId, entry] of Object.entries(next)) {
+              const owner = couponReservationOwner(entry);
+              if ((owner === orphanUserId || owner === hash(orphanUserId) || reservationId === hash(orphanUserId)) &&
+                  String(entry?.bookId || "") === orphanBookId &&
+                  couponReservationExpiryMs(entry) <= now()) delete next[reservationId];
+            }
+            return next;
+          }));
+        });
+        await Promise.all(cleanupTasks);
+      }
+
+      await audit("CHECKOUT_ORPHAN_LOCK_RECOVERED", auth, {
+        lockKey, userId: orphanUserId, bookId: orphanBookId, orderId: null
+      });
+      res.set("Cache-Control", "no-store, max-age=0").json({
+        ok: true, lockKey, orderId: null, status: "LOCK_REMOVED", deleted: false, orphanLock: true
+      });
+      return;
     }
 
     // Resolve both current and legacy database layouts. In older records, the
