@@ -117,4 +117,50 @@ function claimFreeCouponRedemption(current, {
   return { ...effective, usedCount: used + 1, redemptions, reservations };
 }
 
-module.exports = { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
+
+/**
+ * Atomically converts a paid checkout's reservation into a recorded coupon
+ * redemption. If the reservation expired, a slot may be reclaimed only when
+ * the usage limit still has capacity. A captured payment must never silently
+ * overrun the coupon limit.
+ */
+function claimPaidCouponRedemption(current, {
+  userId, userKey, bookId, orderId, timestamp, hash
+}) {
+  if (!current || typeof current !== "object") return;
+  const percent = couponPercent(current);
+  if (percent < 5 || percent >= 100) return;
+
+  const maxUses = Number(current.maxUses ?? current.max_uses ?? current.usageLimit ?? current.usage_limit ?? 0);
+  if (!Number.isInteger(maxUses) || maxUses < 1) return;
+
+  const redemptions = { ...(current.redemptions || {}) };
+  const previous = redemptions[userKey] || redemptions[userId];
+  if (previous) {
+    return previous.bookId === bookId ? current : undefined;
+  }
+
+  const reservations = { ...(current.reservations || {}) };
+  let ownActiveReservation = false;
+  for (const reservationKey of Object.keys(reservations)) {
+    const entry = reservations[reservationKey] || {};
+    const owner = reservationOwner(entry);
+    const expiry = reservationExpiryMs(entry);
+    const isOwn = owner === userId || owner === userKey || (owner && hash(owner) === userKey);
+    if (isOwn && entry.bookId === bookId && expiry > timestamp) ownActiveReservation = true;
+    if (!owner || !expiry || expiry <= timestamp ||
+        (isOwn && entry.bookId === bookId) ||
+        (owner && (redemptions[owner] || redemptions[hash(owner)]))) {
+      delete reservations[reservationKey];
+    }
+  }
+
+  const used = recordedUses(current);
+  const held = liveReservations({ ...current, redemptions, reservations }, timestamp, userId, hash);
+  if (used + held >= maxUses) return;
+
+  redemptions[userKey] = { userId, bookId, orderId, redeemedAt: timestamp };
+  return { ...current, usedCount: used + 1, redemptions, reservations };
+}
+
+module.exports = { claimFreeCouponRedemption, claimPaidCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
