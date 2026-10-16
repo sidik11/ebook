@@ -128,14 +128,19 @@ test("reservation transaction uses the pre-read coupon for one null local snapsh
 });
 
 
-test("stale Razorpay order recovery checks coupon and discounted amount before reuse", () => {
+test("paid checkout creates a Razorpay order for the exact discounted amount", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
-  assert.match(source, /existingCouponCode === requestedCouponCode/);
-  assert.match(source, /Number\(existingOrder\.amountPaise\) === Number\(pricePaise\)/);
-  assert.match(source, /status: "SUPERSEDED"/);
-  assert.match(source, /\["SUPERSEDED", "CANCELLED"\]\.includes\(String\(order\.status \|\| ""\)\.toUpperCase\(\)\)/);
+  const routeStart = source.indexOf('router.post("/orders/create"');
+  const routeEnd = source.indexOf("async function finalizePayment", routeStart);
+  const route = source.slice(routeStart, routeEnd);
+  const orderCreate = route.indexOf("const order = await razorpay.orders.create({");
+  assert.ok(orderCreate >= 0);
+  assert.match(route.slice(orderCreate, orderCreate + 700), /amount: pricePaise, currency: "INR"/);
+  assert.match(route, /amountPaise: order\.amount/);
+  assert.match(route, /couponCode: coupon \? couponCode : ""/);
+  assert.match(route, /originalAmount: Number\(book\.price\), discount: discountRupees/);
 });
 
 
