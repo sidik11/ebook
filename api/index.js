@@ -1572,11 +1572,17 @@ router.put("/admin/featured-books", async (req, res) => {
   }
 });
 
+let adminAnalyticsCache = null;
+let adminAnalyticsCacheExpiresAt = 0;
+
 router.get("/admin/analytics", async (req, res) => {
   try {
     const auth = await adminGuard(req, res);
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
+    if (adminAnalyticsCache && adminAnalyticsCacheExpiresAt > now()) {
+      return res.json(adminAnalyticsCache);
+    }
 
     const db = requireDb();
     const [usersSnap, booksSnap, ordersSnap, purchasesSnap] = await Promise.all([
@@ -1671,7 +1677,7 @@ router.get("/admin/analytics", async (req, res) => {
         };
       });
 
-    res.json({
+    const analyticsPayload = {
       ok: true,
       overview: {
         totalUsers,
@@ -1697,7 +1703,10 @@ router.get("/admin/analytics", async (req, res) => {
       dailyRevenue,
       topBooks,
       recentOrders
-    });
+    };
+    adminAnalyticsCache = analyticsPayload;
+    adminAnalyticsCacheExpiresAt = now() + 15000;
+    res.json(analyticsPayload);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load administrator analytics" });
   }
@@ -2868,9 +2877,14 @@ router.get("/library", async (req, res) => {
       if (b.data.type === "FREE" || Number(b.data.price || 0) === 0) ids.add(b.id);
     });
     const books = [];
-    for (const id of ids) {
-      const b = await get("books/" + id);
-      if (b && b.status === "ACTIVE") books.push(await publicBook(id, b));
+    const libraryIds = [...ids];
+    // Bound concurrency to reduce N+1 latency without flooding RTDB.
+    for (let offset = 0; offset < libraryIds.length; offset += 20) {
+      const batch = await Promise.all(libraryIds.slice(offset, offset + 20).map(async id => {
+        const b = await get("books/" + id);
+        return b && b.status === "ACTIVE" ? publicBook(id, b) : null;
+      }));
+      books.push(...batch.filter(Boolean));
     }
     res.json({ books });
   } catch (e) {
