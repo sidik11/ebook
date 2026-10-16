@@ -3123,7 +3123,29 @@ router.post("/orders/create", async (req, res) => {
     // order layouts; old locks may point to a child key that differs from the
     // Razorpay order ID. Never release a lock unless Razorpay is verified unpaid.
     const lockBeforeAcquire = await get(lockPath);
-    if (lockBeforeAcquire?.orderId && Number(lockBeforeAcquire.expiresAt || 0) <= now()) {
+    // A checkout can remain unresolved even while its lock expiry is in the
+    // future (for example, the browser closed during order creation). After
+    // two minutes, reconcile it before blocking the customer from retrying.
+    const lockAgeMs = lockBeforeAcquire ? now() - Number(lockBeforeAcquire.createdAt || 0) : 0;
+    const lockIsExpiredOrAbandoned = lockBeforeAcquire &&
+      (Number(lockBeforeAcquire.expiresAt || 0) <= now() || lockAgeMs >= 2 * 60 * 1000);
+    if (lockBeforeAcquire && lockIsExpiredOrAbandoned) {
+      if (!lockBeforeAcquire.orderId) {
+        // No provider order ID means checkout never reached order creation.
+        // Remove only the same old lock atomically; a newer concurrent lock wins.
+        await requireDb().ref(lockPath).transaction(current => {
+          if (!current || current.orderId ||
+              (Number(current.expiresAt || 0) > now() &&
+               now() - Number(current.createdAt || 0) < 2 * 60 * 1000) ||
+              String(current.status || "").toUpperCase() === "PAID") return;
+          return null;
+        });
+      }
+    }
+    const refreshedLockBeforeAcquire = await get(lockPath);
+    if (refreshedLockBeforeAcquire?.orderId &&
+        (Number(refreshedLockBeforeAcquire.expiresAt || 0) <= now() ||
+         now() - Number(refreshedLockBeforeAcquire.createdAt || 0) >= 2 * 60 * 1000)) {
       const staleId = String(lockBeforeAcquire.orderId);
       const db = requireDb();
       let staleMatch = null;
