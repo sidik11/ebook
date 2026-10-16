@@ -2599,9 +2599,29 @@ router.post("/orders/create", async (req, res) => {
       if (existingOrder?.status === "CREATED" && existingOrder.userId === auth.userId && existingOrder.bookId === bookId) {
         const razorpay = getRazorpay();
         const providerOrder = await razorpay.orders.fetch(existingLock.orderId);
-        if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise)) {
+        const requestedCouponCode = coupon ? couponCode : "";
+        const existingCouponCode = normalizeCouponCode(existingOrder.couponCode || "");
+        const orderMatchesRequestedPrice = Number(existingOrder.amountPaise) === Number(pricePaise) &&
+          existingCouponCode === requestedCouponCode;
+        if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise) && orderMatchesRequestedPrice) {
           await update(lockPath, { status: "CREATED", updatedAt: now(), expiresAt: now() + 30 * 60 * 1000 });
-          return res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: providerOrder.id, amount: providerOrder.amount, currency: providerOrder.currency, name: "MS Tech EBook", description: book.title, recovered: true });
+          return res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: providerOrder.id, amount: providerOrder.amount, currency: providerOrder.currency, name: "MS Tech EBook", description: book.title, couponCode: requestedCouponCode, discount: discountRupees, recovered: true });
+        }
+        if (providerOrder && providerOrder.status !== "paid" && Number(providerOrder.amount) === Number(existingOrder.amountPaise) && !orderMatchesRequestedPrice) {
+          await update("orders/" + key(existingLock.orderId), {
+            status: "SUPERSEDED", supersededAt: now(),
+            supersededReason: "checkout_price_or_coupon_changed",
+            refundStatus: "NOT_REQUIRED", updatedAt: now()
+          });
+          const replaceLock = await requireDb().ref(lockPath).transaction(current => {
+            if (current?.orderId !== existingLock.orderId ||
+                Number(current?.expiresAt || 0) > now() ||
+                current?.status === "PAID") return;
+            return { token: lockToken, userId: auth.userId, bookId, status: "CREATING", createdAt: now(), expiresAt: now() + 30 * 60 * 1000 };
+          });
+          if (!replaceLock.committed) {
+            return res.status(409).json({ error: "Your previous checkout is still being reconciled. Please retry shortly." });
+          }
         }
       }
     }
@@ -2646,6 +2666,20 @@ async function finalizePayment(paymentId, orderId) {
   const payment = await razorpay.payments.fetch(paymentId);
   const order = await get("orders/" + orderId);
   if (!order) fail(404, "Order not found");
+  if (order.status === "SUPERSEDED") {
+    if (payment.order_id === orderId && payment.status === "captured" && Number(payment.amount) === Number(order.amountPaise)) {
+      await requireDb().ref("orders/" + orderId).update({
+        refundStatus: "REVIEW_REQUIRED", capturedAfterSupersededAt: now(),
+        paymentId, updatedAt: now()
+      });
+      await requireDb().ref("paymentEvents/" + paymentId).set({
+        status: "SUPERSEDED_ORDER_CAPTURED", orderId, userId: order.userId,
+        bookId: order.bookId, processedAt: now(), refundStatus: "REVIEW_REQUIRED"
+      });
+      fail(409, "This checkout order expired and was replaced, but payment was captured. Contact support for a refund.");
+    }
+    fail(409, "This checkout order has expired. Please start checkout again.");
+  }
   if (payment.order_id !== orderId || payment.status !== "captured" || Number(payment.amount) !== Number(order.amountPaise)) {
     fail(400, "Payment verification failed");
   }

@@ -126,3 +126,14 @@ test("reservation transaction uses the pre-read coupon for one null local snapsh
   assert.match(apiSource, /usedProvisionalCoupon = true/);
   assert.match(apiSource, /reservationAbortReason = "coupon_missing_in_transaction"/);
 });
+
+
+test("stale Razorpay order recovery checks coupon and discounted amount before reuse", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(source, /existingCouponCode === requestedCouponCode/);
+  assert.match(source, /Number\(existingOrder\.amountPaise\) === Number\(pricePaise\)/);
+  assert.match(source, /status: "SUPERSEDED"/);
+  assert.match(source, /if \(order\.status === "SUPERSEDED"\)/);
+});
