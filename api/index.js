@@ -3194,6 +3194,68 @@ async function finalizePayment(paymentId, orderId) {
   return { alreadyProcessed: !purchaseTx.committed && !duplicateCaptured, duplicateCaptured };
 }
 
+router.post("/orders/abandon", async (req, res) => {
+  try {
+    const auth = await guard(req, res);
+    if (!auth || !requireCsrf(req, res, auth)) return;
+    const orderId = String(req.body?.orderId || "").trim();
+    const bookId = key(req.body?.bookId || "");
+    if (!orderId || !bookId) return res.status(400).json({ error: "Order ID and book ID are required." });
+    const db = requireDb();
+    const ref = db.ref("orders/" + key(orderId));
+    const snap = await ref.once("value");
+    const order = snap.val();
+    if (!order || String(order.userId || "") !== String(auth.userId) || String(order.bookId || "") !== bookId) {
+      return res.status(404).json({ error: "Checkout order not found." });
+    }
+    if (!["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) {
+      return res.json({ ok: true, status: String(order.status || "UNKNOWN").toUpperCase(), cancelled: false });
+    }
+    if (order.paymentId || order.razorpayPaymentId || order.paymentCapturedAt || order.paidAt) {
+      return res.status(409).json({ error: "Payment data exists; this order must be reconciled, not cancelled." });
+    }
+    if (!Number(order.createdAt) || now() - Number(order.createdAt) < 2 * 60 * 1000) {
+      return res.status(409).json({ error: "Checkout must be at least two minutes old before cancellation." });
+    }
+    let providerOrder;
+    try {
+      providerOrder = await getRazorpay().orders.fetch(String(order.razorpayOrderId || orderId));
+    } catch {
+      return res.status(409).json({ error: "Could not verify Razorpay status. The order was not cancelled." });
+    }
+    if (!providerOrder || String(providerOrder.status || "").toLowerCase() === "paid") {
+      return res.status(409).json({ error: "Razorpay reports the order may be paid. The order was not cancelled." });
+    }
+    const tx = await ref.transaction(current => {
+      if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+      if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
+      if (now() - Number(current.createdAt || 0) < 2 * 60 * 1000) return;
+      return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
+    });
+    if (!tx.committed) return res.status(409).json({ error: "Order changed during cancellation. Refresh your order status." });
+    const purchaseId = hash(String(auth.userId) + ":" + bookId);
+    await db.ref("checkoutLocks/" + purchaseId).transaction(current =>
+      current && String(current.orderId || "") === orderId && String(current.status || "").toUpperCase() !== "PAID" ? null : undefined
+    );
+    const couponCode = normalizeCouponCode(order.couponCode || "");
+    if (couponCode) {
+      await db.ref("coupons/" + couponCode + "/reservations").transaction(current => {
+        if (!current || typeof current !== "object") return current;
+        const next = { ...current };
+        for (const [reservationId, entry] of Object.entries(next)) {
+          const owner = couponReservationOwner(entry);
+          if (String(entry?.orderId || "") === orderId || owner === auth.userId || owner === hash(auth.userId)) delete next[reservationId];
+        }
+        return next;
+      });
+    }
+    await audit("CHECKOUT_ABANDONED_CANCELLED", auth, { orderId, bookId });
+    res.set("Cache-Control", "no-store, max-age=0").json({ ok: true, orderId, status: "CANCELLED", cancelled: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : "Could not cancel abandoned checkout." });
+  }
+});
+
 router.post("/orders/verify", async (req, res) => {
   try {
     const auth = await guard(req, res);
