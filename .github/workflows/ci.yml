@@ -21,9 +21,9 @@ jobs:
             api/package-lock.json
             frontend/package-lock.json
       - name: Install API dependencies
-        run: npm ci --prefix api
+        run: npm install --prefix api
       - name: Install frontend dependencies
-        run: npm ci --prefix frontend
+        run: npm install --prefix frontend
       - name: Run API tests
         run: npm test --prefix api
       - name: Build frontend
