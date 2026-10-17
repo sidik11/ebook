@@ -2166,7 +2166,7 @@ function App() {
       active = false;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [portal, location.pathname, needsAuthBeforeRender]);
+  }, [portal]);
 
   useEffect(() => {
     // The HTML boot screen is fixed-position and removed only after React has
@@ -2183,15 +2183,16 @@ function App() {
   ) ? user : null;
 
   if (loading && needsAuthBeforeRender) {
+    const loadingMessage = location.pathname.startsWith("/read/")
+      ? "Opening your book…"
+      : location.pathname === "/library"
+        ? "Loading your library…"
+        : portal === "admin" || portal === "sadmin"
+          ? "Checking your account…"
+          : "Checking your session…";
     return (
-      <main className="welcome-loading" role="status" aria-live="polite">
-        <div className="welcome-loading-card">
-          <span className="welcome-mark" aria-hidden="true">MS</span>
-          <p className="welcome-eyebrow">A Product Of MSInnovateX</p>
-          <h1>Welcome to MS Tech EBook</h1>
-          <p className="welcome-copy">Your next great read starts here.</p>
-          <span className="welcome-progress" aria-hidden="true" />
-        </div>
+      <main className="center route-loading" role="status" aria-live="polite">
+        <p>{loadingMessage}</p>
       </main>
     );
   }
