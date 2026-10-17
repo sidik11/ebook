@@ -2887,8 +2887,8 @@ async function finalizePayment(paymentId, orderId) {
   if (order.couponCode) {
     const code = normalizeCouponCode(order.couponCode);
     const userKey = hash(order.userId);
-    const usePath = "couponUses/" + code + "/" + userKey;
-    const priorUse = await get(usePath);
+    const priorUsePath = "couponUses/" + code + "/" + userKey;
+    const priorUse = await get(priorUsePath);
     if (priorUse && (priorUse.orderId !== orderId || priorUse.bookId !== order.bookId)) {
       await db.ref("orders/" + orderId).update({
         status: "REVIEW_REQUIRED", paymentId, paymentMethod: safeText(payment.method || "unknown", 30),
