@@ -1414,27 +1414,26 @@ function Detail() {
         theme: { color: "#7c5cff" }
       };
 
+      options.modal = {
+        ...(options.modal || {}),
+        ondismiss: () => {
+          window.setTimeout(async () => {
+            try {
+              await api("/api/orders/abandon", {
+                method: "POST",
+                body: JSON.stringify({ orderId: orderData.order_id, bookId: id })
+              });
+            } catch (abandonError) {
+              console.warn("Abandoned checkout cleanup deferred:", abandonError.message);
+            }
+          }, 2 * 60 * 1000);
+        }
+      };
       const rzp = new window.Razorpay(options);
-      // If the customer dismisses Razorpay, schedule a best-effort cancellation
-      // while this page remains open. Server-side cancellation still verifies
-      // payment state and enforces the two-minute minimum.
-      rzp.on("modal.ondismiss", () => {
-        window.setTimeout(async () => {
-          try {
-            await api("/api/orders/abandon", {
-              method: "POST",
-              body: JSON.stringify({ orderId: orderData.order_id, bookId: id })
-            });
-          } catch (abandonError) {
-            // A payment may still be processing or the browser may have gone
-            // offline; the next checkout attempt also performs stale-lock recovery.
-            console.warn("Abandoned checkout cleanup deferred:", abandonError.message);
-          }
-        }, 2 * 60 * 1000);
-      });
       rzp.on("payment.failed", resp => {
         const metadata = resp.error?.metadata || {};
-        navigate(`/support?category=PAYMENT_ISSUE&bookId=${encodeURIComponent(id)}&orderId=${encodeURIComponent(metadata.order_id || orderData.order_id)}&paymentId=${encodeURIComponent(metadata.payment_id || "")}`);
+        const failedOrderId = metadata.order_id || orderData.order_id;
+        alert("Payment was not confirmed. If money was deducted, do not pay again until you check My Library or contact Support with order ID: " + failedOrderId);
       });
       rzp.open();
     } catch (err) {
@@ -1719,8 +1718,8 @@ function ProtectedPdfPage({ pdfDoc, pageNumber, scale, totalPages, scrollRootRef
     }
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
+        setVisible(Boolean(entry.isIntersecting));
         if (!entry.isIntersecting) continue;
-        setVisible(true);
         const root = entry.rootBounds;
         if (root) {
           const focusLine = root.top + root.height * 0.42;
@@ -1765,6 +1764,10 @@ function ProtectedPdfPage({ pdfDoc, pageNumber, scale, totalPages, scrollRootRef
     return () => {
       active = false;
       try { renderTask.cancel(); } catch {}
+      if (canvas) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
     };
   }, [visible, geometry, scale, pageNumber]);
 
@@ -1815,6 +1818,19 @@ function Reader() {
 
   // Refresh the private reader URL before its one-hour expiry. Updating the
   // URL causes the PDF loading effect to reopen the document with a fresh URL.
+  useEffect(() => {
+    if (!id || !url) return undefined;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await api(`/api/books/${id}/secure-url`);
+        if (response?.url) setUrl(response.url);
+      } catch (refreshError) {
+        console.warn("Could not refresh ebook reader URL:", refreshError.message);
+      }
+    }, 50 * 60 * 1000);
+    return () => window.clearTimeout(timer);
+  }, [id, url]);
+
   useEffect(() => {
     if (!id || !url) return undefined;
     const timer = window.setTimeout(async () => {
