@@ -2133,17 +2133,46 @@ function App() {
   const portal = location.pathname.startsWith("/admin") || new URLSearchParams(location.search).get("portal") === "admin" ? "admin" : location.pathname.startsWith("/sadmin") || new URLSearchParams(location.search).get("portal") === "sadmin" ? "sadmin" : "user";
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const needsAuthBeforeRender =
+    portal !== "user" ||
+    location.pathname === "/library" ||
+    location.pathname.startsWith("/read/") ||
+    location.pathname === "/change-password";
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    cachedCsrfToken = "";
-    checkAuth(portal)
-      .then(data => { if (active) setUser(data.user); })
-      .catch(() => { if (active) setUser(null); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [portal]);
+    let timer = null;
+    const runAuthCheck = () => {
+      if (!active) return;
+      cachedCsrfToken = "";
+      checkAuth(portal)
+        .then(data => { if (active) setUser(data.user); })
+        .catch(() => { if (active) setUser(null); })
+        .finally(() => { if (active) setLoading(false); });
+    };
+
+    // Private routes must validate the session before rendering protected UI.
+    // Public storefront routes render first; auth status is fetched after the
+    // initial render so it cannot extend the homepage's critical request chain.
+    if (needsAuthBeforeRender) {
+      setLoading(true);
+      runAuthCheck();
+    } else {
+      setLoading(false);
+      timer = window.setTimeout(runAuthCheck, 1200);
+    }
+
+    return () => {
+      active = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [portal, location.pathname, needsAuthBeforeRender]);
+
+  useEffect(() => {
+    // The HTML boot screen is fixed-position and removed only after React has
+    // committed the first app render, so it never occupies document flow.
+    document.getElementById("boot-welcome")?.remove();
+  }, []);
 
   // Do not briefly render an administrator identity on a customer route
   // while the customer portal session is being checked (and vice versa).
@@ -2152,15 +2181,6 @@ function App() {
     (portal === "sadmin" && user.role === "sadmin") ||
     (portal === "user" && !["admin", "sadmin"].includes(user.role))
   ) ? user : null;
-
-  // Public storefront pages should not wait for the auth API/cold start.
-  // Keep the auth gate for private pages and admin portals so protected content
-  // never flashes before the session check completes.
-  const needsAuthBeforeRender =
-    portal !== "user" ||
-    location.pathname === "/library" ||
-    location.pathname.startsWith("/read/") ||
-    location.pathname === "/change-password";
 
   if (loading && needsAuthBeforeRender) {
     return (
