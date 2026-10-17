@@ -8,7 +8,7 @@ const Razorpay = require("razorpay");
 const { google } = require("googleapis");
 const { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-const { claimFreeCouponRedemption } = require("./coupon-core");
+const { claimFreeCouponRedemption, claimPaidCouponRedemption } = require("./coupon-core");
 const { isRevenueOrder, isPaymentAttemptOrder, revenueAmount } = require("./analytics-core");
 
 // Load local .env if present
@@ -286,7 +286,8 @@ async function createSession(userId) {
   return { raw, csrf };
 }
 
-const isProduction = process.env.NODE_ENV === "production" && !process.env.DEV_MODE;
+const devModeEnabled = /^(1|true|yes|on)$/i.test(String(process.env.DEV_MODE || "").trim());
+const isProduction = process.env.NODE_ENV === "production" && !devModeEnabled;
 
 function portalCookieNames(portal = "user") {
   if (portal === "admin") return { session: "ms_admin_session", csrf: "ms_admin_csrf" };
@@ -1936,22 +1937,29 @@ router.get("/cron/expire-orders", async (req, res) => {
   }
   try {
     const db = requireDb();
-    const snapshot = await db.ref("orders").once("value");
+    const [snapshot, legacySnapshot] = await Promise.all([
+      db.ref("orders").once("value"),
+      db.ref("order").once("value")
+    ]);
     const cutoff = now() - 2 * 60 * 1000;
     const razorpay = getRazorpay();
     let expired = 0, skipped = 0;
     const tasks = [];
-    snapshot.forEach(child => {
+    const seenOrderIds = new Set();
+    const collectOrders = (sourceSnapshot, sourcePath) => sourceSnapshot.forEach(child => {
       const order = child.val();
-      if (!order || !["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) return;
+      const sourceOrderId = String(order?.razorpayOrderId || order?.orderId || child.key || "");
+      if (!order || !sourceOrderId || seenOrderIds.has(sourceOrderId) || !["CREATED", "PENDING"].includes(String(order.status || "").toUpperCase())) return;
+      seenOrderIds.add(sourceOrderId);
       const createdAt = Number(order.createdAt || 0);
       if (!createdAt || createdAt > cutoff || order.paymentId || order.razorpayPaymentId || order.paymentCapturedAt || order.paidAt) return;
       tasks.push((async () => {
         try {
-          const providerId = String(order.razorpayOrderId || child.key);
+          const providerId = String(order.razorpayOrderId || order.orderId || child.key);
+          const orderRef = db.ref(sourcePath + "/" + key(child.key));
           const providerOrder = await razorpay.orders.fetch(providerId);
           if (!providerOrder || providerOrder.status === "paid") { skipped++; return; }
-          const tx = await db.ref("orders/" + key(child.key)).transaction(current => {
+          const tx = await orderRef.transaction(current => {
             if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
             if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
             if (Number(current.createdAt || 0) > cutoff) return;
@@ -1966,7 +1974,9 @@ router.get("/cron/expire-orders", async (req, res) => {
               if (!current || typeof current !== "object") return current;
               const next = { ...current };
               for (const [reservationId, entry] of Object.entries(next)) {
-                if (String(entry?.orderId || "") === providerId || couponReservationOwner(entry) === userId || couponReservationOwner(entry) === hash(userId)) delete next[reservationId];
+                // Only release the reservation attached to this exact checkout.
+                // Legacy reservations without orderId are left to expire naturally.
+                if (String(entry?.orderId || "") === providerId) delete next[reservationId];
               }
               return next;
             });
@@ -1978,6 +1988,8 @@ router.get("/cron/expire-orders", async (req, res) => {
         }
       })());
     });
+    collectOrders(snapshot, "orders");
+    collectOrders(legacySnapshot, "order");
     await Promise.all(tasks);
     res.set("Cache-Control", "no-store").json({ ok: true, expired, skipped, cutoff });
   } catch (error) {
@@ -2823,6 +2835,15 @@ router.post("/orders/create", async (req, res) => {
       originalAmount: Number(book.price), discount: discountRupees, couponCode: coupon ? couponCode : "",
       status: "CREATED", createdAt: now(), razorpayOrderId: order.id
     });
+    // Bind the reservation to this provider order so cleanup cannot release a newer checkout.
+    if (coupon) {
+      await requireDb().ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId)).transaction(current => {
+        if (!current || couponReservationExpiryMs(current) <= now()) return;
+        const owner = couponReservationOwner(current);
+        if (owner !== auth.userId && owner !== hash(auth.userId)) return;
+        return { ...current, orderId: String(order.id) };
+      });
+    }
     res.json({ key: process.env.RAZORPAY_KEY_ID, order_id: order.id, amount: order.amount, currency: order.currency, name: "MS Tech EBook", description: book.title, couponCode: coupon ? couponCode : "", discount: discountRupees });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Could not create order" });
@@ -2859,6 +2880,64 @@ async function finalizePayment(paymentId, orderId) {
   const priorEvent = await get(eventPath);
   if (priorEvent?.status === "PROCESSED" && (!order.couponCode || ["COMPLETE", "NOT_REQUIRED"].includes(String(order.couponAccountingStatus || "").toUpperCase()))) return { alreadyProcessed: true };
   if (priorEvent?.status === "DUPLICATE_CAPTURED") return { alreadyProcessed: true, duplicateCaptured: true };
+
+  // Atomically claim a completed coupon use before granting a paid entitlement.
+  // If the usage cap has already been won by another checkout, preserve the
+  // captured payment for admin/refund review but do not grant library access.
+  if (order.couponCode) {
+    const code = normalizeCouponCode(order.couponCode);
+    const userKey = hash(order.userId);
+    const usePath = "couponUses/" + code + "/" + userKey;
+    const priorUse = await get(usePath);
+    if (priorUse && (priorUse.orderId !== orderId || priorUse.bookId !== order.bookId)) {
+      await db.ref("orders/" + orderId).update({
+        status: "REVIEW_REQUIRED", paymentId, paymentMethod: safeText(payment.method || "unknown", 30),
+        paymentCapturedAt: Number(payment.created_at || 0) > 0 ? Number(payment.created_at) * 1000 : now(),
+        refundStatus: "REVIEW_REQUIRED", couponAccountingStatus: "REJECTED_REDEMPTION_CONFLICT",
+        couponAccountingUpdatedAt: now(), updatedAt: now()
+      });
+      await db.ref(eventPath).set({
+        status: "COUPON_REDEMPTION_CONFLICT_CAPTURED", orderId, userId: order.userId,
+        bookId: order.bookId, paymentId, amount: Number(order.amount || 0),
+        amountPaise: Number(order.amountPaise || 0), processedAt: now(), refundStatus: "REVIEW_REQUIRED"
+      });
+      fail(409, "Payment was captured, but this coupon was already redeemed by this account. Access was not granted; refund review is required.");
+    }
+    if (!priorUse) {
+      const allUses = await get("couponUses/" + code);
+      const ledgerCount = allUses && typeof allUses === "object" ? Object.keys(allUses).length : 0;
+      const couponRef = db.ref("coupons/" + code);
+      const configuredCoupon = (await couponRef.once("value")).val();
+      let usedProvisionalPaidCoupon = false;
+      const claimTx = await couponRef.transaction(current => {
+        // Prime the transaction once if the Admin SDK supplies a null local value.
+        if (!current && !usedProvisionalPaidCoupon && configuredCoupon) {
+          usedProvisionalPaidCoupon = true;
+          current = configuredCoupon;
+        }
+        return claimPaidCouponRedemption(current, {
+          userId: order.userId, userKey, bookId: order.bookId, orderId, timestamp: now(), ledgerCount
+        });
+      });
+      const latestCoupon = claimTx.snapshot?.val() || {};
+      const existingClaim = (latestCoupon.redemptions || {})[userKey] || (latestCoupon.redemptions || {})[order.userId];
+      const claimedForThisOrder = existingClaim?.orderId === orderId && existingClaim?.bookId === order.bookId;
+      if (!claimTx.committed && !claimedForThisOrder) {
+        const capturedAt = Number(payment.created_at || 0) > 0 ? Number(payment.created_at) * 1000 : now();
+        await db.ref("orders/" + orderId).update({
+          status: "REVIEW_REQUIRED", paymentId, paymentMethod: safeText(payment.method || "unknown", 30),
+          paymentCapturedAt: capturedAt, refundStatus: "REVIEW_REQUIRED",
+          couponAccountingStatus: "REJECTED_USAGE_LIMIT", couponAccountingUpdatedAt: now(), updatedAt: now()
+        });
+        await db.ref(eventPath).set({
+          status: "COUPON_LIMIT_EXCEEDED_CAPTURED", orderId, userId: order.userId,
+          bookId: order.bookId, paymentId, amount: Number(order.amount || 0),
+          amountPaise: Number(order.amountPaise || 0), processedAt: now(), refundStatus: "REVIEW_REQUIRED"
+        });
+        fail(409, "Payment was captured after the coupon usage limit was reached. Access was not granted; refund review is required.");
+      }
+    }
+  }
 
   // The purchase record is the single atomic entitlement gate. Only one
   // captured payment can claim it; parallel webhook/browser callbacks cannot
@@ -3004,8 +3083,9 @@ router.post("/orders/abandon", async (req, res) => {
         if (!current || typeof current !== "object") return current;
         const next = { ...current };
         for (const [reservationId, entry] of Object.entries(next)) {
-          const owner = couponReservationOwner(entry);
-          if (String(entry?.orderId || "") === orderId || owner === auth.userId || owner === hash(auth.userId)) delete next[reservationId];
+          // Never clear a different checkout reservation belonging to this user.
+          // Legacy entries without orderId expire naturally rather than risking a newer hold.
+          if (String(entry?.orderId || "") === String(order.razorpayOrderId || orderId)) delete next[reservationId];
         }
         return next;
       });
