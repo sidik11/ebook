@@ -1833,17 +1833,22 @@ function Reader() {
 
     (async () => {
       try {
-        const response = await fetch(url, { credentials: "omit", cache: "no-store" });
-        if (!response.ok) throw new Error(`Unable to load protected ebook (HTTP ${response.status}).`);
-        const buffer = await response.arrayBuffer();
-        if (!active) return;
         // Load PDF.js only when a protected ebook is opened, keeping the initial storefront bundle smaller.
         const [{ getDocument, GlobalWorkerOptions }, workerModule] = await Promise.all([
           import("pdfjs-dist/legacy/build/pdf.mjs"),
           import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url")
         ]);
         GlobalWorkerOptions.workerSrc = workerModule.default;
-        loadingTask = getDocument({ data: buffer });
+        // Use PDF.js URL/range loading instead of buffering the entire ebook.
+        // Disable streaming/prefetch so large PDFs and slow mobile links fetch
+        // the needed byte ranges as pages are read.
+        loadingTask = getDocument({
+          url,
+          withCredentials: false,
+          rangeChunkSize: 64 * 1024,
+          disableStream: true,
+          disableAutoFetch: true
+        });
         const document = await loadingTask.promise;
         if (!active) {
           await document.destroy();

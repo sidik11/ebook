@@ -87,6 +87,10 @@ function AdminPanel() {
     [books]
   );
   const [orders, setOrders] = useState([]);
+  const [ordersTotalCount, setOrdersTotalCount] = useState(0);
+  const [ordersHasMore, setOrdersHasMore] = useState(false);
+  const [ordersNextOffset, setOrdersNextOffset] = useState(0);
+  const [loadingMoreOrders, setLoadingMoreOrders] = useState(false);
   const [orderBusyId, setOrderBusyId] = useState("");
   const [coupons, setCoupons] = useState([]);
   const [featuredBookIds, setFeaturedBookIds] = useState([]);
@@ -259,10 +263,37 @@ function AdminPanel() {
 
   const loadOrders = async () => {
     try {
-      const data = await api("/api/admin/orders?limit=1000");
+      const data = await api("/api/admin/orders?limit=100&offset=0");
       setOrders(Array.isArray(data.orders) ? data.orders : []);
+      setOrdersTotalCount(Number(data.totalOrders) || 0);
+      setOrdersHasMore(Boolean(data.hasMore));
+      setOrdersNextOffset(Number(data.nextOffset) || 0);
     } catch {
       setOrders([]);
+      setOrdersTotalCount(0);
+      setOrdersHasMore(false);
+      setOrdersNextOffset(0);
+    }
+  };
+
+  const loadMoreOrders = async () => {
+    if (loadingMoreOrders || !ordersHasMore) return;
+    setLoadingMoreOrders(true);
+    try {
+      const data = await api("/api/admin/orders?limit=100&offset=" + ordersNextOffset);
+      const nextOrders = Array.isArray(data.orders) ? data.orders : [];
+      setOrders(current => {
+        const byId = new Map(current.map(order => [order.id, order]));
+        nextOrders.forEach(order => byId.set(order.id, order));
+        return [...byId.values()];
+      });
+      setOrdersTotalCount(Number(data.totalOrders) || ordersTotalCount);
+      setOrdersHasMore(Boolean(data.hasMore));
+      setOrdersNextOffset(Number(data.nextOffset) || ordersNextOffset);
+    } catch (err) {
+      showNotice("error", err.message || "Could not load more payment records.");
+    } finally {
+      setLoadingMoreOrders(false);
     }
   };
 
@@ -1117,7 +1148,7 @@ function AdminPanel() {
         {view === "orders" && (
           <section className="admin-page-grid">
             <div className="admin-card">
-              <SectionHeading eyebrow="PAYMENT LEDGER" title={"All payment details · " + orders.length} subtitle={"Successful revenue: " + formatMoney(analyticsOverview.totalBuyAmount) + " · Average paid order: " + formatMoney(analyticsOverview.averageOrderValue)} action={<button className="admin-secondary" onClick={() => Promise.all([loadOrders(), loadAnalytics()])}><RefreshCw size={15} /> Refresh payments</button>} />
+              <SectionHeading eyebrow="PAYMENT LEDGER" title={"Payment details · " + orders.length + " of " + ordersTotalCount} subtitle={"Successful revenue: " + formatMoney(analyticsOverview.totalBuyAmount) + " · Average paid order: " + formatMoney(analyticsOverview.averageOrderValue)} action={<button className="admin-secondary" onClick={() => Promise.all([loadOrders(), loadAnalytics()])}><RefreshCw size={15} /> Refresh payments</button>} />
               {orders.length ? (
                 <div className="admin-data-table-wrap">
                   <table className="admin-data-table admin-payment-table">
@@ -1163,6 +1194,11 @@ function AdminPanel() {
               ) : (
                 <EmptyState icon={<ShoppingBag size={30} />} title="No orders yet" text="Customer payment orders will appear here when checkout is started." />
               )}
+              {ordersHasMore && <div style={{display:"flex",justifyContent:"center",padding:"16px"}}>
+                <button className="admin-secondary" onClick={loadMoreOrders} disabled={loadingMoreOrders}>
+                  {loadingMoreOrders ? "Loading more…" : "Load more orders (" + Math.max(0, ordersTotalCount - orders.length) + " remaining)"}
+                </button>
+              </div>}
             </div>
           </section>
         )}
