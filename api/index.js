@@ -2909,32 +2909,44 @@ async function finalizePayment(paymentId, orderId) {
       const couponRef = db.ref("coupons/" + code);
       const configuredCoupon = (await couponRef.once("value")).val();
       let usedProvisionalPaidCoupon = false;
-      const claimTx = await couponRef.transaction(current => {
-        // Prime the transaction once if the Admin SDK supplies a null local value.
-        if (!current && !usedProvisionalPaidCoupon && configuredCoupon) {
-          usedProvisionalPaidCoupon = true;
-          current = configuredCoupon;
-        }
-        return claimPaidCouponRedemption(current, {
-          userId: order.userId, userKey, bookId: order.bookId, orderId, timestamp: now(), ledgerCount
+      let claimTx = null;
+      let claimError = null;
+      try {
+        claimTx = await couponRef.transaction(current => {
+          // Prime the transaction once if the Admin SDK supplies a null local value.
+          if (!current && !usedProvisionalPaidCoupon && configuredCoupon) {
+            usedProvisionalPaidCoupon = true;
+            current = configuredCoupon;
+          }
+          return claimPaidCouponRedemption(current, {
+            userId: order.userId, userKey, bookId: order.bookId, orderId, timestamp: now(), ledgerCount
+          });
         });
-      });
-      const latestCoupon = claimTx.snapshot?.val() || {};
+      } catch (error) {
+        claimError = error;
+        console.error("Captured payment coupon claim failed", { orderId, code, error: safeText(error?.message, 240) });
+      }
+      const latestCoupon = claimTx?.snapshot?.val() || configuredCoupon || {};
       const existingClaim = (latestCoupon.redemptions || {})[userKey] || (latestCoupon.redemptions || {})[order.userId];
       const claimedForThisOrder = existingClaim?.orderId === orderId && existingClaim?.bookId === order.bookId;
-      if (!claimTx.committed && !claimedForThisOrder) {
+      if (!claimTx?.committed && !claimedForThisOrder) {
         const capturedAt = Number(payment.created_at || 0) > 0 ? Number(payment.created_at) * 1000 : now();
+        const reviewStatus = claimError ? "COUPON_CLAIM_FAILED_CAPTURED" : "COUPON_LIMIT_EXCEEDED_CAPTURED";
         await db.ref("orders/" + orderId).update({
           status: "REVIEW_REQUIRED", paymentId, paymentMethod: safeText(payment.method || "unknown", 30),
           paymentCapturedAt: capturedAt, refundStatus: "REVIEW_REQUIRED",
-          couponAccountingStatus: "REJECTED_USAGE_LIMIT", couponAccountingUpdatedAt: now(), updatedAt: now()
+          couponAccountingStatus: claimError ? "RETRY_REQUIRED" : "REJECTED_USAGE_LIMIT",
+          couponAccountingError: claimError ? safeText(claimError.message || "Coupon claim failed", 240) : null,
+          couponAccountingUpdatedAt: now(), updatedAt: now()
         });
         await db.ref(eventPath).set({
-          status: "COUPON_LIMIT_EXCEEDED_CAPTURED", orderId, userId: order.userId,
+          status: reviewStatus, orderId, userId: order.userId,
           bookId: order.bookId, paymentId, amount: Number(order.amount || 0),
           amountPaise: Number(order.amountPaise || 0), processedAt: now(), refundStatus: "REVIEW_REQUIRED"
         });
-        fail(409, "Payment was captured after the coupon usage limit was reached. Access was not granted; refund review is required.");
+        fail(409, claimError
+          ? "Payment was captured, but coupon usage could not be confirmed. Access was not granted; payment review is required."
+          : "Payment was captured after the coupon usage limit was reached. Access was not granted; refund review is required.");
       }
     }
   }
@@ -2975,6 +2987,7 @@ async function finalizePayment(paymentId, orderId) {
     ["orders/" + orderId + "/updatedAt"]: now(),
     [eventPath]: event,
   };
+  updates["orders/" + orderId + "/refundStatus"] = duplicateCaptured ? "REVIEW_REQUIRED" : null;
   if (duplicateCaptured) {
     updates["orders/" + orderId + "/refundStatus"] = "REVIEW_REQUIRED";
     updates["orders/" + orderId + "/duplicateOfPaymentId"] = currentPurchase.paymentId;
