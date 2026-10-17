@@ -1813,6 +1813,21 @@ function Reader() {
     return () => { active = false; };
   }, [id]);
 
+  // Refresh the private reader URL before its one-hour expiry. Updating the
+  // URL causes the PDF loading effect to reopen the document with a fresh URL.
+  useEffect(() => {
+    if (!id || !url) return undefined;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await api(`/api/books/${id}/secure-url`);
+        if (response?.url) setUrl(response.url);
+      } catch (refreshError) {
+        console.warn("Could not refresh ebook reader URL:", refreshError.message);
+      }
+    }, 50 * 60 * 1000);
+    return () => window.clearTimeout(timer);
+  }, [id, url]);
+
   useEffect(() => {
     if (!id || !pdfDoc) return undefined;
     const timer = window.setTimeout(() => {
