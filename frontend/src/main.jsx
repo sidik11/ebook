@@ -1847,7 +1847,11 @@ function Reader() {
   useEffect(() => {
     if (!id || !pdfDoc) return undefined;
     const timer = window.setTimeout(() => {
-      writeReaderState("reader:" + id, { pageNumber, scale, updatedAt: Date.now() }).catch(() => {});
+      const savedState = { pageNumber, scale, updatedAt: Date.now() };
+      // Keep the in-memory restore source current as well as IndexedDB so a
+      // signed-URL refresh restores the latest page, not the page from login.
+      readerStatePromiseRef.current = Promise.resolve(savedState);
+      writeReaderState("reader:" + id, savedState).catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
   }, [id, pageNumber, scale, pdfDoc]);
