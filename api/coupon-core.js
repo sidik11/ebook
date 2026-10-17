@@ -65,6 +65,32 @@ function firstDefined(...values) {
   return values.find(value => value !== undefined && value !== null && value !== "");
 }
 
+function claimPaidCouponRedemption(current, {
+  userId, userKey, bookId, orderId, timestamp, ledgerCount = 0
+}) {
+  if (!current || typeof current !== "object") return;
+  const effective = {
+    ...current,
+    maxUses: firstDefined(current.maxUses, current.max_uses, current.usageLimit, current.usage_limit, current.maxRedemptions, current.totalUses),
+    usedCount: firstDefined(current.usedCount, current.usesCount, current.redeemedCount, 0),
+    redemptions: current.redemptions && typeof current.redemptions === "object" ? current.redemptions : {},
+    reservations: current.reservations && typeof current.reservations === "object" ? current.reservations : {}
+  };
+  if (normalizeStatus(effective.status) !== "ACTIVE") return;
+  const redemptions = { ...effective.redemptions };
+  const previous = redemptions[userKey] || redemptions[userId];
+  if (previous) return previous.orderId === orderId && previous.bookId === bookId ? current : undefined;
+  const maxUses = Number(effective.maxUses || 0);
+  const used = Math.max(recordedUses(effective), Number(ledgerCount || 0));
+  if (!Number.isSafeInteger(maxUses) || maxUses < 1 || used >= maxUses) return;
+  redemptions[userKey] = { userId, bookId, orderId, redeemedAt: timestamp };
+  const reservations = { ...effective.reservations };
+  for (const [reservationId, entry] of Object.entries(reservations)) {
+    if (String(entry?.orderId || "") === String(orderId)) delete reservations[reservationId];
+  }
+  return { ...effective, usedCount: used + 1, redemptions, reservations };
+}
+
 function claimFreeCouponRedemption(current, {
   configuredCoupon, userId, userKey, bookId, pricePaise, timestamp, hash
 }) {
@@ -117,4 +143,4 @@ function claimFreeCouponRedemption(current, {
   return { ...effective, usedCount: used + 1, redemptions, reservations };
 }
 
-module.exports = { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
+module.exports = { claimFreeCouponRedemption, claimPaidCouponRedemption, couponPercent, discountPaise, timestampMs, expiryMs };
