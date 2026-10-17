@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { claimFreeCouponRedemption, couponPercent, discountPaise, timestampMs } = require("./coupon-core");
+const { claimFreeCouponRedemption, claimPaidCouponRedemption, couponPercent, discountPaise, timestampMs } = require("./coupon-core");
 
 const hash = value => crypto.createHash("sha256").update(String(value)).digest("hex");
 const base = () => ({ code: "FREECOUPON01", discountPercent: 100, maxUses: 2, usedCount: 0, status: "ACTIVE", reservations: {}, redemptions: {} });
@@ -187,4 +187,53 @@ test("coupon validation and checkout enforce usage from the per-user redemption 
   const createRoute = source.slice(createStart, createEnd);
   assert.match(createRoute, /get\("couponUses\/" \+ couponCode\)/);
   assert.match(createRoute, /couponRecordedUses\(effective, couponLedgerUseCount\)/);
+});
+
+
+test("paid redemption atomically claims the last use and rejects a second account", () => {
+  const coupon = { ...base(), discountPercent: 50, maxUses: 1 };
+  const first = claimPaidCouponRedemption(coupon, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", timestamp: 1_800_000_000_000, ledgerCount: 0
+  });
+  assert.ok(first);
+  assert.equal(first.usedCount, 1);
+  assert.equal(first.redemptions[hash("user-a")].orderId, "order-a");
+  assert.equal(claimPaidCouponRedemption(first, {
+    userId: "user-b", userKey: hash("user-b"), bookId: "book-b",
+    orderId: "order-b", timestamp: 1_800_000_000_001, ledgerCount: 0
+  }), undefined);
+});
+
+test("paid redemption is idempotent for the same order and refuses another order for the same account", () => {
+  const first = claimPaidCouponRedemption({ ...base(), discountPercent: 50 }, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", timestamp: 1_800_000_000_000, ledgerCount: 0
+  });
+  assert.equal(claimPaidCouponRedemption(first, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", timestamp: 1_800_000_000_001, ledgerCount: 1
+  }), first);
+  assert.equal(claimPaidCouponRedemption(first, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-other", timestamp: 1_800_000_000_002, ledgerCount: 1
+  }), undefined);
+});
+
+test("paid redemption includes ledger-only uses when enforcing maxUses", () => {
+  const coupon = { ...base(), discountPercent: 50, maxUses: 2, usedCount: 0 };
+  assert.equal(claimPaidCouponRedemption(coupon, {
+    userId: "user-a", userKey: hash("user-a"), bookId: "book-a",
+    orderId: "order-a", timestamp: 1_800_000_000_000, ledgerCount: 2
+  }), undefined);
+});
+
+test("abandon and expiry cleanup only release reservations linked to that exact order", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(source, /String\(entry\?\.orderId \|\| ""\) === providerId/);
+  assert.match(source, /String\(entry\?\.orderId \|\| ""\) === String\(order\.razorpayOrderId \|\| orderId\)/);
+  assert.match(source, /collectOrders\(legacySnapshot, "order"\)/);
+  assert.match(source, /devModeEnabled = \/\^\(1\|true\|yes\|on\)\$\/i/);
 });
