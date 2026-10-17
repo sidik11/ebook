@@ -2153,10 +2153,25 @@ function App() {
     (portal === "user" && !["admin", "sadmin"].includes(user.role))
   ) ? user : null;
 
-  if (loading) {
+  // Public storefront pages should not wait for the auth API/cold start.
+  // Keep the auth gate for private pages and admin portals so protected content
+  // never flashes before the session check completes.
+  const needsAuthBeforeRender =
+    portal !== "user" ||
+    location.pathname === "/library" ||
+    location.pathname.startsWith("/read/") ||
+    location.pathname === "/change-password";
+
+  if (loading && needsAuthBeforeRender) {
     return (
-      <main className="center">
-        <p style={{ color: "#8b949e" }}>Loading MS Tech EBook...</p>
+      <main className="welcome-loading" role="status" aria-live="polite">
+        <div className="welcome-loading-card">
+          <span className="welcome-mark" aria-hidden="true">MS</span>
+          <p className="welcome-eyebrow">A Product Of MSInnovateX</p>
+          <h1>Welcome to MS Tech EBook</h1>
+          <p className="welcome-copy">Your next great read starts here.</p>
+          <span className="welcome-progress" aria-hidden="true" />
+        </div>
       </main>
     );
   }
