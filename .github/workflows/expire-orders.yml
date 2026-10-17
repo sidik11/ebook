@@ -1,0 +1,29 @@
+name: Expire abandoned ebook checkouts
+
+on:
+  schedule:
+    # Vercel Hobby cron is daily-only; run this on GitHub every five minutes.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: abandoned-order-cleanup
+  cancel-in-progress: false
+
+jobs:
+  expire-orders:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Expire checkouts older than two minutes
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: https://mstech-ebook.store
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Add CRON_SECRET in GitHub repository Actions secrets."
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/cron/expire-orders"

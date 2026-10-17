@@ -77,9 +77,9 @@ function requireR2() {
   if (!r2) fail(503, "R2 storage is not configured. Set BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY, and R2_ENDPOINT.");
   return r2;
 }
-async function r2SignedGet(keyName) {
+async function r2SignedGet(keyName, ttlMs = SIGNED_URL_MS) {
   const r2 = requireR2();
-  return getSignedUrl(r2.client, new GetObjectCommand({ Bucket: r2.bucket, Key: keyName }), { expiresIn: Math.floor(SIGNED_URL_MS / 1000) });
+  return getSignedUrl(r2.client, new GetObjectCommand({ Bucket: r2.bucket, Key: keyName }), { expiresIn: Math.floor(ttlMs / 1000) });
 }
 function isR2Path(value) { return /^private\/(ebooks|covers)\/[a-f0-9-]+\.(pdf|jpg|png|webp)$/.test(String(value || "")); }
 function isR2Book(book) { return book?.storageProvider === "r2"; }
@@ -150,6 +150,7 @@ app.use(cookieParser());
 
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const SIGNED_URL_MS = 5 * 60 * 1000;
+const READER_SIGNED_URL_MS = 60 * 60 * 1000;
 const MAX_BOOK_PRICE = 100000;
 const MAX_BOOK_TITLE = 200;
 const MAX_DESCRIPTION = 5000;
@@ -1630,7 +1631,7 @@ router.get("/admin/analytics", async (req, res) => {
       (String(o.paymentMethod || "").toUpperCase() === "COUPON" || Number(o.amountPaise || 0) === 0)
     );
     const completedOrders = orders.filter(o => String(o.status || "").toUpperCase() === "PAID");
-    const openOrders = orders.filter(o => !["PAID", "DUPLICATE_CAPTURED", "SUPERSEDED"].includes(String(o.status || "").toUpperCase()));
+    const openOrders = orders.filter(o => !["PAID", "DUPLICATE_CAPTURED", "SUPERSEDED", "CANCELLED", "REVIEW_REQUIRED"].includes(String(o.status || "").toUpperCase()));
     const paidPurchases = purchases.filter(p => String(p.status || "").toUpperCase() === "PAID");
 
     // Revenue, paid-order counts, conversion metrics, and top sellers exclude
@@ -1676,7 +1677,7 @@ router.get("/admin/analytics", async (req, res) => {
       const amount = paidOrders
         .filter(o => orderTimestamp(o) >= day.getTime() && orderTimestamp(o) < next)
         .reduce((sum, o) => sum + revenueAmount(o), 0);
-      dailyRevenue.push({ date: day.toISOString().slice(5, 10), amount });
+      dailyRevenue.push({ date: String(day.getMonth() + 1).padStart(2, "0") + "-" + String(day.getDate()).padStart(2, "0"), amount });
     }
 
     const activeBooks = books.filter(b => String(b.status || "").toUpperCase() === "ACTIVE").length;
@@ -2002,7 +2003,8 @@ router.get("/admin/orders", async (req, res) => {
     const auth = await adminGuard(req, res);
     if (!auth) return;
     res.set("Cache-Control", "no-store, max-age=0");
-    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const offset = Math.max(0, Math.min(Number.parseInt(req.query.offset, 10) || 0, 10000000));
     const db = requireDb();
     const [snap, legacySnap] = await Promise.all([
       db.ref("orders").once("value"),
@@ -2036,8 +2038,9 @@ router.get("/admin/orders", async (req, res) => {
     addOrderSnapshot(snap, false);
     const rawOrders = Array.from(byId.values());
     rawOrders.sort((a, b) => Number(b.paymentCapturedAt || b.createdAt || 0) - Number(a.paymentCapturedAt || a.createdAt || 0));
+    const totalOrders = rawOrders.length;
     const orders = [];
-    for (const order of rawOrders.slice(0, limit)) {
+    for (const order of rawOrders.slice(offset, offset + limit)) {
       const [customer, book] = await Promise.all([
         order.userId ? get("users/" + key(order.userId)) : null,
         order.bookId ? get("books/" + key(order.bookId)) : null,
@@ -2065,7 +2068,14 @@ router.get("/admin/orders", async (req, res) => {
         updatedAt: Number(order.updatedAt || 0),
       });
     }
-    res.json({ orders });
+    res.json({
+      orders,
+      totalOrders,
+      offset,
+      limit,
+      hasMore: offset + orders.length < totalOrders,
+      nextOffset: offset + orders.length
+    });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || "Could not load orders" });
   }
@@ -2444,8 +2454,25 @@ router.post("/coupons/redeem-free", async (req, res) => {
       });
     }
 
-    const configuredCoupon = await getActiveCoupon(code);
+    let configuredCoupon = await getActiveCoupon(code);
     if (!configuredCoupon) return res.status(400).json({ error: "This coupon is inactive or expired." });
+    const couponRef = db.ref("coupons/" + code);
+    const [configuredCouponSnapshot, couponUsesLedger] = await Promise.all([
+      couponRef.once("value"),
+      get("couponUses/" + code)
+    ]);
+    const latestConfiguredCoupon = configuredCouponSnapshot.val();
+    if (!latestConfiguredCoupon || couponStatus(latestConfiguredCoupon) !== "ACTIVE" || couponExpiryIsPast(latestConfiguredCoupon)) {
+      return res.status(400).json({ error: "This coupon is inactive, expired, or was deleted. Please apply it again." });
+    }
+    configuredCoupon = {
+      ...latestConfiguredCoupon,
+      status: couponStatus(latestConfiguredCoupon),
+      expiresAt: couponExpiryMs(latestConfiguredCoupon) || null
+    };
+    const couponLedgerUseCount = couponUsesLedger && typeof couponUsesLedger === "object"
+      ? Object.keys(couponUsesLedger).length
+      : 0;
     const percent = couponPercent(configuredCoupon);
     const discountPaise = couponDiscountPaise(configuredCoupon, pricePaise);
     if (percent !== 100 || discountPaise !== pricePaise) {
@@ -2460,7 +2487,7 @@ router.post("/coupons/redeem-free", async (req, res) => {
 
     // If an earlier attempt recorded the redemption but failed before creating
     // the entitlement, allow an idempotent retry for that same ebook only.
-    const priorUse = await get("couponUses/" + code + "/" + userKey);
+    const priorUse = couponUsesLedger && typeof couponUsesLedger === "object" ? couponUsesLedger[userKey] : null;
     if (priorUse && priorUse.bookId !== bookId) {
       return res.status(409).json({ error: "This account has already redeemed this coupon for another ebook." });
     }
@@ -2473,22 +2500,36 @@ router.post("/coupons/redeem-free", async (req, res) => {
     let currentCoupon = configuredCoupon;
     if (!redemptionAlreadyRecorded) {
       const redemptionTime = now();
-      const couponTx = await db.ref("coupons/" + code).transaction(current =>
-        claimFreeCouponRedemption(current, {
+      // A Firebase transaction can first invoke its updater with a cold local
+      // null. Permit the pre-read value only on that first callback; if a retry
+      // sees null, the coupon was deleted and must not be recreated.
+      let firstCouponTransactionCall = true;
+      const couponTx = await couponRef.transaction(current => {
+        const isFirstCall = firstCouponTransactionCall;
+        firstCouponTransactionCall = false;
+        if (!current) {
+          if (!isFirstCall || !configuredCoupon || typeof configuredCoupon !== "object") return;
+          current = configuredCoupon;
+        }
+        return claimFreeCouponRedemption(current, {
           configuredCoupon,
           userId: auth.userId,
           userKey,
           bookId,
           pricePaise,
           timestamp: redemptionTime,
-          hash
-        })
-      );
+          hash,
+          ledgerCount: couponLedgerUseCount
+        });
+      });
 
       if (couponTx.committed) {
         currentCoupon = couponTx.snapshot?.val() || configuredCoupon;
         redemptionAlreadyRecorded = true;
       } else {
+        if (!couponTx.snapshot?.exists?.()) {
+          return res.status(409).json({ error: "This coupon was deleted during redemption. Refresh and apply a valid coupon again." });
+        }
         const latest = couponTx.snapshot?.val() || {};
         const previous = (latest.redemptions || {})[userKey];
         if (previous?.bookId === bookId) {
@@ -2511,7 +2552,7 @@ router.post("/coupons/redeem-free", async (req, res) => {
           };
           const reservations = effective.reservations || {};
           const activeReservations = couponLiveReservations(effective, redemptionTime, auth.userId);
-          const recordedUses = couponRecordedUses(effective);
+          const recordedUses = couponRecordedUses(effective, couponLedgerUseCount);
           const maxUses = Number(effective.maxUses || 0);
           if (recordedUses >= maxUses) {
             return res.status(409).json({
@@ -2646,6 +2687,9 @@ router.post("/orders/create", async (req, res) => {
     if (couponCode) {
       coupon = await getActiveCoupon(couponCode);
       if (!coupon) return res.status(400).json({ error: "Invalid or expired coupon code." });
+      if (couponPercent(coupon) === 100) {
+        return res.status(400).json({ error: "100% coupons must be redeemed through the free-coupon flow. Apply the coupon again to add the ebook to your library." });
+      }
       const priorCouponUse = await get("couponUses/" + couponCode + "/" + hash(auth.userId));
       if (priorCouponUse) {
         // If an earlier free redemption completed (or its entitlement was
@@ -2790,40 +2834,6 @@ router.post("/orders/create", async (req, res) => {
         }
       }
     }
-    const purchase = await owned(auth.userId, bookId);
-
-    // A 100% coupon grants access without sending a zero-value order to Razorpay.
-    if (coupon && pricePaise === 0) {
-      const db = requireDb();
-      const purchaseId = hash(auth.userId + ":" + bookId);
-      const orderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
-      const purchaseTx = await db.ref("purchases/" + purchaseId).transaction(current => {
-        if (current?.status === "PAID") return;
-        return { userId: auth.userId, bookId, orderId, paymentId: "", amount: 0, amountPaise: 0, status: "PAID", purchasedAt: now(), couponCode, originalAmount: Number(book.price || 0), discount: discountRupees };
-      });
-      if (!purchaseTx.committed) {
-        await db.ref("coupons/" + couponCode + "/reservations/" + hash(auth.userId)).remove();
-        const currentPurchase = purchaseTx.snapshot.val();
-        if (currentPurchase?.status === "PAID" && currentPurchase.userId === auth.userId && currentPurchase.bookId === bookId) {
-          return res.json({ free: true, alreadyOwned: true, bookId });
-        }
-        return res.status(409).json({ error: "This ebook has already been purchased." });
-      }
-      const useTx = await db.ref("couponUses/" + couponCode + "/" + hash(auth.userId)).transaction(current => {
-        if (current) return;
-        return { userId: auth.userId, bookId, orderId, discount: discountRupees, originalAmount: Number(book.price || 0), paidAmount: 0, usedAt: now() };
-      });
-      await db.ref("coupons/" + couponCode).transaction(current => {
-        if (!current) return;
-        const reservations = current.reservations || {};
-        delete reservations[hash(auth.userId)];
-        return { ...current, usedCount: Number(current.usedCount || 0) + (useTx.committed ? 1 : 0), reservations };
-      });
-      await set("orders/" + orderId, { userId: auth.userId, bookId, amountPaise: 0, amount: 0, originalAmount: Number(book.price || 0), discount: discountRupees, couponCode, status: "PAID", createdAt: now(), updatedAt: now(), razorpayOrderId: orderId, paymentId: "", paymentMethod: "COUPON" });
-      await audit("COUPON_REDEEMED_FREE_PURCHASE", auth, { code: couponCode, bookId, orderId });
-      return res.json({ free: true, order_id: orderId, couponCode, discount: discountRupees });
-    }
-
     const razorpay = getRazorpay();
     const order = await razorpay.orders.create({
       amount: pricePaise, currency: "INR",
@@ -3299,12 +3309,13 @@ router.get("/books/:id/secure-url", async (req, res) => {
       }
     }
     let url;
-    if (isR2Book(book)) url = await r2SignedGet(book.storagePath);
+    if (isR2Book(book)) url = await r2SignedGet(book.storagePath, READER_SIGNED_URL_MS);
     else {
       const bucket = requireBucket();
-      [url] = await bucket.file(book.storagePath).getSignedUrl({ action: "read", expires: now() + SIGNED_URL_MS, responseDisposition: "inline" });
+      [url] = await bucket.file(book.storagePath).getSignedUrl({ action: "read", expires: now() + READER_SIGNED_URL_MS, responseDisposition: "inline" });
     }
-    res.json({ url, expiresIn: SIGNED_URL_MS / 1000 });
+    res.set("Cache-Control", "no-store, max-age=0");
+    res.json({ url, expiresIn: READER_SIGNED_URL_MS / 1000 });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.status ? e.message : "Could not open ebook" });
   }

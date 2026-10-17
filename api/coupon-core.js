@@ -92,9 +92,12 @@ function claimPaidCouponRedemption(current, {
 }
 
 function claimFreeCouponRedemption(current, {
-  configuredCoupon, userId, userKey, bookId, pricePaise, timestamp, hash
+  configuredCoupon, userId, userKey, bookId, pricePaise, timestamp, hash, ledgerCount = 0
 }) {
-  const source = current && typeof current === "object" ? current : configuredCoupon;
+  // A missing transaction value is a missing/deleted coupon, not permission to
+  // recreate it from a stale pre-read. The route handles a cold local snapshot
+  // with a one-shot provisional value after explicitly priming the reference.
+  const source = current && typeof current === "object" ? current : null;
   if (!source || typeof source !== "object") return;
 
   const expiryValue = firstDefined(
@@ -135,7 +138,7 @@ function claimFreeCouponRedemption(current, {
   }
 
   const maxUses = Number(effective.maxUses || 0);
-  const used = recordedUses({ ...effective, redemptions });
+  const used = Math.max(recordedUses({ ...effective, redemptions }), Math.max(0, Number(ledgerCount) || 0));
   const held = liveReservations({ ...effective, redemptions, reservations }, timestamp, userId, hash);
   if (!Number.isInteger(maxUses) || maxUses < 1 || used + held >= maxUses) return;
 

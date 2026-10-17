@@ -26,10 +26,8 @@ test("first redemption atomically increments usage and records entitlement claim
   assert.equal(next.redemptions[hash("user-a")].bookId, "book-a");
 });
 
-test("null initial Firebase transaction snapshot uses the previously read coupon", () => {
-  const next = claim(null, "user-a", "book-a");
-  assert.equal(next.usedCount, 1);
-  assert.equal(next.redemptions[hash("user-a")].bookId, "book-a");
+test("missing transaction value never recreates a coupon from a stale pre-read", () => {
+  assert.equal(claim(null, "user-a", "book-a"), undefined);
 });
 
 test("retry for same user and book is idempotent and does not increment usage", () => {
@@ -49,6 +47,26 @@ test("usage limit prevents concurrent users from both claiming final use", () =>
   const winner = claim(oneUse, "user-a", "book-a");
   assert.ok(winner);
   assert.equal(claim(winner, "user-b", "book-b"), undefined);
+});
+
+test("free redemption counts historical ledger-only uses when aggregate counts are stale", () => {
+  const coupon = { ...base(), maxUses: 2, usedCount: 0, redemptions: {} };
+  assert.equal(claimFreeCouponRedemption(coupon, {
+    configuredCoupon: base(), userId: "user-new", userKey: hash("user-new"),
+    bookId: "book-new", pricePaise: 7900, timestamp: 1_800_000_000_000,
+    hash, ledgerCount: 2
+  }), undefined);
+});
+
+test("free redemption can claim remaining use when ledger count is below limit", () => {
+  const coupon = { ...base(), maxUses: 2, usedCount: 0, redemptions: {} };
+  const next = claimFreeCouponRedemption(coupon, {
+    configuredCoupon: base(), userId: "user-new", userKey: hash("user-new"),
+    bookId: "book-new", pricePaise: 7900, timestamp: 1_800_000_000_000,
+    hash, ledgerCount: 1
+  });
+  assert.ok(next);
+  assert.equal(next.usedCount, 2);
 });
 
 test("expired, disabled, and non-100% coupons cannot grant free access", () => {
@@ -236,4 +254,55 @@ test("abandon and expiry cleanup only release reservations linked to that exact 
   assert.match(source, /String\(entry\?\.orderId \|\| ""\) === String\(order\.razorpayOrderId \|\| orderId\)/);
   assert.match(source, /collectOrders\(legacySnapshot, "order"\)/);
   assert.match(source, /devModeEnabled = \/\^\(1\|true\|yes\|on\)\$\/i/);
+});
+
+
+test("paid order endpoint cannot independently grant 100% coupon access", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const start = source.indexOf('router.post("/orders/create"');
+  const end = source.indexOf("async function finalizePayment", start);
+  const route = source.slice(start, end);
+  const rejectFree = route.indexOf("if (couponPercent(coupon) === 100)");
+  const reserve = route.indexOf("const reserveCoupon = () => couponRef.transaction");
+  assert.ok(rejectFree >= 0 && reserve > rejectFree);
+  assert.doesNotMatch(route, /if \(coupon && pricePaise === 0\)/);
+  assert.doesNotMatch(route, /status: "PAID", purchasedAt: now\(\)/);
+});
+
+test("free redemption uses full ledger count and only one provisional transaction callback", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const start = source.indexOf('router.post("/coupons/redeem-free"');
+  const end = source.indexOf('router.get("/admin/coupons"', start);
+  const route = source.slice(start, end);
+  assert.match(route, /Object\.keys\(couponUsesLedger\)\.length/);
+  assert.match(route, /let firstCouponTransactionCall = true/);
+  assert.match(route, /if \(!isFirstCall \|\| !configuredCoupon/);
+  assert.match(route, /ledgerCount: couponLedgerUseCount/);
+});
+
+test("admin analytics excludes cancelled and review-required orders and uses local date labels", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(source, /\["PAID", "DUPLICATE_CAPTURED", "SUPERSEDED", "CANCELLED", "REVIEW_REQUIRED"\]/);
+  assert.match(source, /day\.getMonth\(\) \+ 1/);
+  assert.doesNotMatch(source, /dailyRevenue\.push\(\{ date: day\.toISOString\(\)\.slice\(5, 10\)/);
+});
+
+test("admin order endpoint and panel expose offset pagination", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const apiSource = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const start = apiSource.indexOf('router.get("/admin/orders"');
+  const end = apiSource.indexOf('router.patch("/admin/orders/:id/terminate"', start);
+  const endpoint = apiSource.slice(start, end);
+  assert.match(endpoint, /Number\.parseInt\(req\.query\.offset, 10\)/);
+  assert.match(endpoint, /hasMore: offset \+ orders\.length < totalOrders/);
+  const panel = fs.readFileSync(path.join(__dirname, "../frontend/src/AdminPanel.jsx"), "utf8");
+  assert.match(panel, /loadMoreOrders/);
+  assert.match(panel, /offset=" \+ ordersNextOffset/);
 });
