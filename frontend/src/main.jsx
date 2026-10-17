@@ -2171,7 +2171,7 @@ function App() {
   useEffect(() => {
     // The HTML boot screen is fixed-position and removed only after React has
     // committed the first app render, so it never occupies document flow.
-    document.getElementById("boot-welcome")?.remove();
+    document.getElementById("boot-welcome")?.classList.add("boot-welcome-hidden");
   }, []);
 
   // Do not briefly render an administrator identity on a customer route
