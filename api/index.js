@@ -1033,7 +1033,8 @@ router.post("/auth/reset-password", async (req, res) => {
     // Incorrect codes increment attempts atomically; a correct code atomically
     // consumes the token, so parallel requests cannot both reset the password.
     const transaction = await resetRef.transaction(current => {
-      if (!current || current.consumed || Number(current.expiresAt) <= timestamp) return;
+      if (current === null || current === undefined) return;
+      if (current.consumed || Number(current.expiresAt) <= timestamp) return;
       const attempts = Number(current.attempts || 0);
       if (attempts >= PASSWORD_RESET_OTP_ATTEMPTS) return;
       if (resetOtpHash(current.userId, otp) === current.otpHash) {
@@ -1439,7 +1440,8 @@ router.patch("/admin/books/:id/review", async (req, res) => {
     const db = requireDb();
     const reviewTime = now();
     const reviewTx = await db.ref("books/" + id).transaction(current => {
-      if (!current || current.status !== "PENDING_REVIEW") return;
+      if (current === null || current === undefined) return;
+      if (current.status !== "PENDING_REVIEW") return;
       return { ...current, ...(decision === "APPROVE" ? { category, publishedDate } : {}), status: decision === "APPROVE" ? "ACTIVE" : "REJECTED", reviewedAt: reviewTime, reviewedBy: auth.userId, reviewNote: note || null, updatedAt: reviewTime };
     });
     if (!reviewTx.committed) return res.status(409).json({ error: "This book is no longer pending review. Refresh the catalogue and check its current status." });
@@ -1959,9 +1961,15 @@ router.get("/cron/expire-orders", async (req, res) => {
           const providerId = String(order.razorpayOrderId || order.orderId || child.key);
           const orderRef = db.ref(sourcePath + "/" + key(child.key));
           const providerOrder = await razorpay.orders.fetch(providerId);
-          if (!providerOrder || providerOrder.status === "paid") { skipped++; return; }
+          const providerPayments = await razorpay.orders.fetchPayments(providerId);
+          const paymentRows = Array.isArray(providerPayments?.items) ? providerPayments.items : [];
+          const hasReceivedPayment = String(providerOrder?.status || "").toLowerCase() === "paid" ||
+            paymentRows.some(payment => ["captured", "authorized"].includes(String(payment?.status || "").toLowerCase()));
+          const paymentStillProcessing = paymentRows.some(payment => ["created", "authorized", "pending"].includes(String(payment?.status || "").toLowerCase()));
+          if (!providerOrder || hasReceivedPayment || paymentStillProcessing) { skipped++; return; }
           const tx = await orderRef.transaction(current => {
-            if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+            if (current === null || current === undefined) return;
+            if (!["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
             if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
             if (Number(current.createdAt || 0) > cutoff) return;
             return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
@@ -2123,7 +2131,8 @@ router.patch("/admin/orders/:id/terminate", async (req, res) => {
 
     const terminationTime = now();
     const tx = await db.ref(orderPath).transaction(current => {
-      if (!current || !["CREATED", "PENDING"].includes(String(current.status || current.paymentStatus || "").trim().toUpperCase())) return;
+      if (current === null || current === undefined) return;
+      if (!["CREATED", "PENDING"].includes(String(current.status || current.paymentStatus || "").trim().toUpperCase())) return;
       if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
       return {
         ...current,
@@ -2577,6 +2586,7 @@ router.post("/coupons/redeem-free", async (req, res) => {
     const discountRupees = pricePaise / 100;
     const proposedOrderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
     const purchaseTx = await db.ref("purchases/" + purchaseId).transaction(current => {
+      if (current === null || current === undefined) return;
       if (current?.status === "PAID") return;
       return {
         userId: auth.userId, bookId, orderId: proposedOrderId, paymentId: "",
@@ -3084,17 +3094,25 @@ router.post("/orders/abandon", async (req, res) => {
     if (!Number(order.createdAt) || now() - Number(order.createdAt) < 2 * 60 * 1000) {
       return res.status(409).json({ error: "Checkout must be at least two minutes old before cancellation." });
     }
-    let providerOrder;
+    let providerOrder, providerPayments;
     try {
-      providerOrder = await getRazorpay().orders.fetch(String(order.razorpayOrderId || orderId));
+      const razorpay = getRazorpay();
+      const providerId = String(order.razorpayOrderId || orderId);
+      providerOrder = await razorpay.orders.fetch(providerId);
+      providerPayments = await razorpay.orders.fetchPayments(providerId);
     } catch {
-      return res.status(409).json({ error: "Could not verify Razorpay status. The order was not cancelled." });
+      return res.status(409).json({ error: "Could not verify Razorpay payment status. The order was not cancelled." });
     }
-    if (!providerOrder || String(providerOrder.status || "").toLowerCase() === "paid") {
-      return res.status(409).json({ error: "Razorpay reports the order may be paid. The order was not cancelled." });
+    const paymentRows = Array.isArray(providerPayments?.items) ? providerPayments.items : [];
+    const hasReceivedPayment = String(providerOrder?.status || "").toLowerCase() === "paid" ||
+      paymentRows.some(payment => ["captured", "authorized"].includes(String(payment?.status || "").toLowerCase()));
+    const paymentStillProcessing = paymentRows.some(payment => ["created", "authorized", "pending"].includes(String(payment?.status || "").toLowerCase()));
+    if (!providerOrder || hasReceivedPayment || paymentStillProcessing) {
+      return res.status(409).json({ error: "Razorpay shows a payment received or still processing. The order was not cancelled." });
     }
     const tx = await ref.transaction(current => {
-      if (!current || !["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
+      if (current === null || current === undefined) return;
+      if (!["CREATED", "PENDING"].includes(String(current.status || "").toUpperCase())) return;
       if (current.paymentId || current.razorpayPaymentId || current.paymentCapturedAt || current.paidAt) return;
       if (now() - Number(current.createdAt || 0) < 2 * 60 * 1000) return;
       return { ...current, status: "CANCELLED", cancelledAt: now(), cancelReason: "CHECKOUT_ABANDONED_AFTER_2_MINUTES", updatedAt: now() };
