@@ -2586,7 +2586,6 @@ router.post("/coupons/redeem-free", async (req, res) => {
     const discountRupees = pricePaise / 100;
     const proposedOrderId = "coupon_free_" + crypto.randomBytes(12).toString("hex");
     const purchaseTx = await db.ref("purchases/" + purchaseId).transaction(current => {
-      if (current === null || current === undefined) return;
       if (current?.status === "PAID") return;
       return {
         userId: auth.userId, bookId, orderId: proposedOrderId, paymentId: "",
